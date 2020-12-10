@@ -6,128 +6,175 @@
 @Software: PyCharm
 @Desc    : 
 """
+import torch
 import torch.nn as nn
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_sizes=[7, 11, 7], stride=1, dropout=0.2):
-        super(ResidualBlock, self).__init__()
-        self.input_channels = input_channels
-        self.output_channels = output_channels
-        self.stride = stride
+class R1DBlock(nn.Module):
+    def __init__(self, in_channel, out_channel, kernel_size=7, stride=1):
+        super(R1DBlock, self).__init__()
 
-        assert len(kernel_sizes) == 3
+        assert kernel_size % 2 == 1
 
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(input_channels, output_channels, kernel_size=kernel_sizes[0], stride=1,
-                      padding=kernel_sizes[0] // 2, bias=False),
-            nn.BatchNorm1d(output_channels),
-            nn.ReLU(inplace=True)
-        )
-
-        # Only conv2 degrades the scale
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(output_channels, output_channels, kernel_size=kernel_sizes[1], stride=stride,
-                      padding=kernel_sizes[1] // 2, bias=False),
-            nn.BatchNorm1d(output_channels),
+        self.layers = nn.Sequential(
+            nn.Conv1d(in_channel, out_channel, kernel_size=kernel_size, stride=stride, padding=kernel_size // 2,
+                      bias=False),
+            nn.BatchNorm1d(out_channel),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout)
+            nn.Conv1d(out_channel, out_channel, kernel_size=kernel_size, stride=1, padding=kernel_size // 2,
+                      bias=False),
+            nn.BatchNorm1d(out_channel)
         )
 
-        self.conv3 = nn.Sequential(
-            nn.Conv1d(output_channels, output_channels, kernel_size=kernel_sizes[2], stride=1,
-                      padding=kernel_sizes[2] // 2, bias=False),
-            nn.BatchNorm1d(output_channels),
+        self.downsample = nn.Sequential(
+            nn.Conv1d(in_channel, out_channel, kernel_size=1, stride=stride, bias=False),
+            nn.BatchNorm1d(out_channel)
         )
-
         self.relu = nn.ReLU(inplace=True)
 
-        # If stride == 1, the length of the time dimension will not be changed
-        # If input_channels == output_channels, the number of channels will not be changed
-        # If the channels are mismatch, the conv1d is used to upgrade the channel
-        # If the time dimensions are mismatch, the conv1d is used to downsample the scale
-        self.downsample = nn.Sequential()
-        if stride != 1 or input_channels != output_channels:
-            self.downsample = nn.Sequential(
-                nn.Conv1d(input_channels, output_channels, kernel_size=1, stride=stride, padding=0, bias=False),
-                nn.BatchNorm1d(output_channels)
-            )
-
     def forward(self, x):
-        residual = x
+        out = self.layers(x)
+        identity = self.downsample(x)
 
-        out = self.conv1(x)
-        out = self.conv2(out)
-        out = self.conv3(out)
+        out += identity
 
-        # Downsampe is an empty list if the size of inputs and outputs are same
-        residual = self.downsample(x)
-        out += residual
-        out = self.relu(out)
-
-        return out
+        return self.relu(out)
 
 
-class ResNet(nn.Module):
-    def __init__(self, input_channels, hidden_channels, num_classes, kernel_sizes=[7, 11, 7]):
-        super(ResNet, self).__init__()
+class R1DNet(nn.Module):
+    def __init__(self, in_channel, mid_channel, feature_dim, layers=None, kernel_size=7, stride=1):
+        super(R1DNet, self).__init__()
 
-        # The first convolution layer
-        #         self.conv1 = nn.Sequential(
-        #             nn.Conv1d(input_channels, hidden_channels, kernel_size=15, stride=2, padding=7, bias=False),
-        #             nn.BatchNorm1d(hidden_channels),
-        #             nn.ReLU(inplace=True),
-        #             nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        #         )
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(input_channels, hidden_channels, kernel_size=1, padding=0, bias=False),
-            nn.BatchNorm1d(hidden_channels),
-            nn.ReLU(inplace=True)
+        if layers is None:
+            layers = [2, 2, 2, 2]
+        self.head = nn.Sequential(
+            nn.Conv1d(in_channel, mid_channel, kernel_size=kernel_size, stride=2,
+                      padding=kernel_size // 2, bias=False),
+            nn.BatchNorm1d(mid_channel),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=7, stride=2, padding=3)
         )
 
-        # Residual layers
-        self.layer1 = self.__make_layer(ResidualBlock, hidden_channels, hidden_channels, 2, kernel_sizes, stride=1)
-        self.layer2 = self.__make_layer(ResidualBlock, hidden_channels, hidden_channels * 2, 2, kernel_sizes, stride=2)
-        self.layer3 = self.__make_layer(ResidualBlock, hidden_channels * 2, hidden_channels * 4, 2, kernel_sizes,
-                                        stride=2)
-        self.layer4 = self.__make_layer(ResidualBlock, hidden_channels * 4, hidden_channels * 8, 2, kernel_sizes,
-                                        stride=2)
+        self.layer1 = self.__make_layer(layers[0], mid_channel, mid_channel * 2, kernel_size, stride)
+        self.layer2 = self.__make_layer(layers[1], mid_channel * 2, mid_channel * 4, kernel_size, stride)
+        self.layer3 = self.__make_layer(layers[2], mid_channel * 4, mid_channel * 8, kernel_size, stride)
+        self.layer4 = self.__make_layer(layers[3], mid_channel * 8, mid_channel * 16, kernel_size, stride)
 
-        self.avg_pool = nn.AdaptiveAvgPool1d(
-            1)  # Pooling operation computes the average of the last dimension (time dimension)
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(mid_channel * 16, feature_dim)
 
-        # A dense layer for output
-        self.fc = nn.Linear(hidden_channels * 8, num_classes)
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm1d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
-        # Initialize weights
-
-    #         for m in self.modules():
-    #             if isinstance(m, nn.Conv1d):
-    #                 n = m.kernel_size[0] * m.kernel_size[0] * m.out_channels
-    #                 m.weight.data.normal_(0, math.sqrt(2. / n))
-    #             elif isinstance(m, nn.BatchNorm1d):
-    #                 m.weight.data.fill_(1)
-    #                 m.bias.data.zero_()
-
-    def __make_layer(self, block, input_channels, output_channels, num_blocks, kernel_sizes, stride):
+    def __make_layer(self, num_block, in_channel, out_channel, kernel_size, stride):
         layers = []
-        layers.append(block(input_channels, output_channels, kernel_sizes, stride=stride))
-        for i in range(1, num_blocks):
-            layers.append(block(output_channels, output_channels, stride=1))
+
+        layers.append(R1DBlock(in_channel, out_channel, kernel_size, stride))
+
+        for _ in range(num_block):
+            layers.append(R1DBlock(out_channel, out_channel, kernel_size, 1))
+
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        """
-        L_out = floor[(L_in + 2*padding - kernel) / stride + 1]
-        """
-        out = self.conv1(x)
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
+        x = self.head(x)
 
-        out = self.avg_pool(out)
-        out = out.view(x.size(0), -1)
-        out = self.fc(out)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
 
-        return out
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+
+class R2DBlock(nn.Module):
+    def __init__(self, in_channel, out_channel, kernel_size=(7, 7), stride=(1, 1)):
+        super(R2DBlock, self).__init__()
+
+        assert kernel_size[0] % 2 == 1 and kernel_size[1] % 2 == 1
+
+        self.layers = nn.Sequential(
+            nn.Conv2d(in_channel, out_channel, kernel_size=(kernel_size[0], 1), stride=(stride[0], 1),
+                      padding=(kernel_size[0] // 2, 0), bias=False),
+            nn.BatchNorm2d(out_channel),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channel, out_channel, kernel_size=(1, kernel_size[1]), stride=(1, stride[1]),
+                      padding=(0, kernel_size[1] // 2), bias=False),
+            nn.BatchNorm2d(out_channel)
+        )
+
+        self.downsample = nn.Sequential(
+            nn.Conv1d(in_channel, out_channel, kernel_size=(1, 1), stride=stride, bias=False),
+            nn.BatchNorm2d(out_channel)
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        out = self.layers(x)
+        identity = self.downsample(x)
+
+        out += identity
+
+        return self.relu(out)
+
+
+class R2DNet(nn.Module):
+    def __init__(self, in_channel, mid_channel, feature_dim, layers=None, kernel_size=(7, 7), stride=(1, 1)):
+        super(R2DNet, self).__init__()
+
+        if layers is None:
+            layers = [2, 2, 2, 2]
+        self.head = nn.Sequential(
+            nn.Conv2d(in_channel, mid_channel, kernel_size=kernel_size, stride=(2, 2),
+                      padding=(kernel_size[0] // 2, kernel_size[1] // 2), bias=False),
+            nn.BatchNorm2d(mid_channel),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=7, stride=2, padding=3)
+        )
+
+        self.layer1 = self.__make_layer(layers[0], mid_channel, mid_channel * 2, kernel_size, stride)
+        self.layer2 = self.__make_layer(layers[1], mid_channel * 2, mid_channel * 4, kernel_size, stride)
+        self.layer3 = self.__make_layer(layers[2], mid_channel * 4, mid_channel * 8, kernel_size, stride)
+        self.layer4 = self.__make_layer(layers[3], mid_channel * 8, mid_channel * 16, kernel_size, stride)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(mid_channel * 16, feature_dim)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def __make_layer(self, num_block, in_channel, out_channel, kernel_size, stride):
+        layers = []
+
+        layers.append(R2DBlock(in_channel, out_channel, kernel_size, stride))
+
+        for _ in range(num_block):
+            layers.append(R2DBlock(out_channel, out_channel, kernel_size, (1, 1)))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.head(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
