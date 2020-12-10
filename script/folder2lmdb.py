@@ -7,6 +7,7 @@
 @Desc    : 
 """
 import argparse
+import os
 import sys
 
 import numpy as np
@@ -19,8 +20,8 @@ from mvc.utils.data import folder_to_lmdb, LmdbDataset
 def parse_args(verbose=True):
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--meta-file', type=str, required=True)
-    parser.add_argument('--dest-path', type=str, required=True)
+    parser.add_argument('--data-path', type=str, required=True)
+    parser.add_argument('--dest-file', type=str, required=True)
     parser.add_argument('--commit-interval', type=int, default=100)
     parser.add_argument('--test', action='store_true')
 
@@ -44,11 +45,11 @@ def parse_args(verbose=True):
 if __name__ == '__main__':
     args = parse_args()
 
-    folder_to_lmdb(args.meta_file, args.dest_path, args.commit_interval)
+    folder_to_lmdb(args.data_path, args.dest_file, args.commit_interval)
 
     if args.test:
-        dataset = LmdbDataset(args.dest_path, args.meta_file)
-        meta_df = pd.read_csv(args.meta_file)
+        dataset = LmdbDataset(args.dest_file, os.path.join(args.data_path, 'meta.csv'))
+        meta_df = pd.read_csv(os.path.join(args.data_path, 'meta.csv'))
         data = np.load(meta_df.loc[0, 'path'])
         print(np.concatenate([np.expand_dims(data['data_q'], axis=0), data['data_k']], axis=0))
         print(dataset[0][0].numpy())

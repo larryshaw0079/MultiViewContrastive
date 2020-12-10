@@ -49,10 +49,10 @@ if __name__ == '__main__':
         warnings.warn(f'The path {args.dest_path} does not existed, created.')
         os.makedirs(args.dest_path)
 
-    meta_df = {'path': [], 'class': []}
+    meta_df = {'path': [], 'class': [], 'patient': []}
 
     file_list = os.listdir(args.data_path)
-    for file in file_list:
+    for i_patient, file in enumerate(file_list):
         print(f'Processing {file}...')
         file_name = os.path.join(args.data_path, file)
         file_prefix = file.split('.')[0]
@@ -81,8 +81,9 @@ if __name__ == '__main__':
             data_k = np.stack(data_k, axis=0)  # (num_sample, channel, length)
 
             np.savez(os.path.join(args.dest_path, file_prefix, f'{idx}.npz'), data_q=data_q, data_k=data_k)
-            meta_df['path'].append(os.path.join(args.dest_path, file_prefix, f'{idx}.npz'))
+            meta_df['path'].append(os.path.join(file_prefix, f'{idx}.npz'))
             meta_df['class'].append(annotations[idx])
+            meta_df['patient'].append(i_patient)
 
     meta_df = pd.DataFrame(meta_df)
     meta_df.to_csv(os.path.join(args.dest_path, 'meta.csv'), index=False)

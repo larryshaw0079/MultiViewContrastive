@@ -6,6 +6,7 @@
 @Software: PyCharm
 @Desc    : 
 """
+import os
 
 import lmdb
 import numpy as np
@@ -38,12 +39,12 @@ class LmdbDataset(Dataset):
         return self.length
 
 
-def folder_to_lmdb(meta_file, dest_file, commit_interval):
+def folder_to_lmdb(data_path, dest_file, commit_interval):
     assert dest_file.endswith('.lmdb')
 
     print('Start...')
-    meta_df = pd.read_csv(meta_file)
-    files = meta_df['path'].values.tolist()
+    meta_df = pd.read_csv(os.path.join(data_path, 'meta.csv'))
+    files = [os.path.join(data_path, p) for p in meta_df['path'].values.tolist()]
     file_size = np.load(files[0])['data_q'].nbytes + np.load(files[0])['data_k'].nbytes
     dataset_size = file_size * len(files)
     print(f'Estimated dataset size: {dataset_size} bytes')
