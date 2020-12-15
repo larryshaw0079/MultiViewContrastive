@@ -8,13 +8,14 @@
 """
 import argparse
 import os
+import pickle
 import sys
 
 import numpy as np
-import pandas as pd
 
 sys.path.append('../')
-from mvc.utils.data import folder_to_lmdb, LmdbDataset
+from mvc.utils.data import folder_to_lmdb
+from mvc.data import LmdbDataset
 
 
 def parse_args(verbose=True):
@@ -48,8 +49,14 @@ if __name__ == '__main__':
     folder_to_lmdb(args.data_path, args.dest_file, args.commit_interval)
 
     if args.test:
-        dataset = LmdbDataset(args.dest_file, os.path.join(args.data_path, 'meta.csv'))
-        meta_df = pd.read_csv(os.path.join(args.data_path, 'meta.csv'))
-        data = np.load(meta_df.loc[0, 'path'])
-        print(np.concatenate([np.expand_dims(data['data_q'], axis=0), data['data_k']], axis=0))
-        print(dataset[0][0].numpy())
+        dataset = LmdbDataset(args.dest_file, os.path.join(args.data_path, 'meta.pkl'), num_channel=2)
+        with open(os.path.join(args.data_path, 'meta.pkl'), 'rb') as f:
+            meta_info = pickle.load(f)
+        data = np.load(os.path.join(args.data_path, meta_info['path'][0]))
+
+        ori_data = data['data'].astype(np.float32)
+        lmdb_data = dataset[0][0].numpy().astype(np.float32)
+        print(ori_data.shape, ori_data)
+        print(lmdb_data.shape, lmdb_data)
+
+        assert (ori_data == lmdb_data).all()

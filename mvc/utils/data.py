@@ -7,31 +7,35 @@
 @Desc    : 
 """
 import os
+import pickle
 
 import lmdb
 import numpy as np
-import pandas as pd
 from tqdm.std import tqdm
 
 
 def folder_to_lmdb(data_path, dest_file, commit_interval):
     assert dest_file.endswith('.lmdb')
 
-    print('Start...')
-    meta_df = pd.read_csv(os.path.join(data_path, 'meta.csv'))
-    files = [os.path.join(data_path, p) for p in meta_df['path'].values.tolist()]
-    file_size = np.load(files[0])['data_q'].nbytes + np.load(files[0])['data_k'].nbytes
+    print('[INFO] Start...')
+    with open(os.path.join(data_path, 'meta.pkl'), 'rb') as f:
+        meta_info = pickle.load(f)
+    files = meta_info['path']
+
+    file_size = np.load(os.path.join(data_path, files[0]))['data'].nbytes
     dataset_size = file_size * len(files)
-    print(f'Estimated dataset size: {dataset_size} bytes')
+    print(f'[INFO] Estimated dataset size: {dataset_size} bytes')
 
     env = lmdb.open(dest_file, map_size=dataset_size * 10)
     txn = env.begin(write=True)
 
     for idx, file in tqdm(enumerate(files), total=len(files), desc='Writing LMDB'):
-        data = np.load(file)
-        data = np.concatenate([np.expand_dims(data['data_q'], axis=0), data['data_k']], axis=0)
+        data = np.load(os.path.join(data_path, file))
+        value = data['data'].astype(np.float32)
+        value = value.tobytes()
+        # value = pa.serialize(value).to_buffer()
         key = file.encode('ascii')
-        txn.put(key, data)
+        txn.put(key, value)
 
         if (idx + 1) % commit_interval == 0:
             txn.commit()
@@ -39,3 +43,4 @@ def folder_to_lmdb(data_path, dest_file, commit_interval):
 
     txn.commit()
     env.close()
+    print('[INFO] Finished...')

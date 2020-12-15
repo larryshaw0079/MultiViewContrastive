@@ -175,6 +175,14 @@ class ChannelShuffling(Transformation):
         return x[channel_indices, :]
 
 
+class Perturbation(Transformation):
+    def __init__(self):
+        super(Perturbation, self).__init__()
+
+    def __call__(self, x: np.ndarray):
+        pass
+
+
 class Compose(Transformation):
     def __init__(self, trans: List[Transformation]):
         super(Transformation, self).__init__()
