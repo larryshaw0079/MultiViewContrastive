@@ -14,7 +14,7 @@ from ..backbone.resnet import R1DNet, R2DNet
 
 
 class Moco(nn.Module):
-    def __init__(self, network='r1d', in_channel=2, mid_channel=16, dim=128, K=2048, m=0.999, T=0.07):
+    def __init__(self, network='r1d', device=0, in_channel=2, mid_channel=16, dim=128, K=2048, m=0.999, T=0.07):
         '''
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 2048)
@@ -26,6 +26,7 @@ class Moco(nn.Module):
         assert network in ['r1d', 'r2d']
 
         self.network = network
+        self.device = device
         self.dim = dim
         self.K = K
         self.m = m
@@ -83,11 +84,11 @@ class Moco(nn.Module):
         q = F.normalize(q, dim=1)
         q = q.view(B, self.dim)
 
-        in_train_mode = q.requires_grad
+        # in_train_mode = q.requires_grad
 
         # compute key features
         with torch.no_grad():  # no gradient to keys
-            if in_train_mode: self._momentum_update_key_encoder()  # update the key encoder
+            self._momentum_update_key_encoder()  # update the key encoder
 
             # shuffle for making use of BN
             #             x2, idx_unshuffle = self._batch_shuffle_ddp(x2)
@@ -113,9 +114,9 @@ class Moco(nn.Module):
         # labels: positive key indicators
         labels = torch.zeros(logits.shape[0], dtype=torch.long)
         if torch.cuda.is_available():
-            labels = labels.cuda()
+            labels = labels.cuda(self.device)
 
         # dequeue and enqueue
-        if in_train_mode: self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k)
 
         return logits, labels

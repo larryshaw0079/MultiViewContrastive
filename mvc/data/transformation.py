@@ -7,7 +7,7 @@
 @Desc    : 
 """
 import abc
-from typing import List
+from typing import List, Union, Dict, Any
 
 import numpy as np
 from scipy.interpolate import CubicSpline
@@ -27,7 +27,11 @@ class Transformation(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
+        pass
+
+    @abc.abstractmethod
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
         """
 
         Parameters
@@ -44,8 +48,15 @@ class Jittering(Transformation):
         self.loc = loc
         self.sigma = sigma
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         return x + self.sigma * np.random.randn(*x.shape) + self.loc
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
 
 
 class HorizontalFlipping(Transformation):
@@ -54,11 +65,18 @@ class HorizontalFlipping(Transformation):
 
         self.randomize = randomize
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         if self.randomize:
             return np.flip(x, axis=-1) if np.random.randint(low=0, high=2) == 1 else x
         else:
             return np.flip(x, axis=-1)
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
 
 
 class VerticalFlipping(Transformation):
@@ -67,11 +85,18 @@ class VerticalFlipping(Transformation):
 
         self.randomize = randomize
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         if self.randomize:
             return -x if np.random.randint(low=0, high=2) == 1 else x
         else:
             return -x
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
 
 
 class MagnitudeWarping(Transformation):
@@ -81,8 +106,15 @@ class MagnitudeWarping(Transformation):
         self.sigma = sigma
         self.knots = knots
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         return x * random_curve(x.shape[-1], self.sigma, self.knots)
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
 
 
 class TimeWarping(Transformation):
@@ -92,7 +124,7 @@ class TimeWarping(Transformation):
         self.sigma = sigma
         self.knots = knots
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         length = x.shape[-1]
         out = []
         for i in range(x.shape[-2]):
@@ -105,6 +137,13 @@ class TimeWarping(Transformation):
 
         return np.stack(out)
 
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
 
 class Scaling(Transformation):
     def __init__(self, scale_factor: float = 0.2, direction: str = 'both', randomize: bool = True):
@@ -116,7 +155,7 @@ class Scaling(Transformation):
         self.direction = direction
         self.randomize = randomize
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         if self.direction == 'both':
             if self.randomize:
                 return x * (1.0 + self.scale_factor * np.random.randint(low=-1, high=2))
@@ -135,6 +174,13 @@ class Scaling(Transformation):
         else:
             raise ValueError
 
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
 
 class RandomCropping(Transformation):
     def __init__(self, size: int, fill: float = 0.0, padding_mode: str = 'constant'):
@@ -146,7 +192,7 @@ class RandomCropping(Transformation):
         self.fill = fill
         self.padding_mode = padding_mode
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         start_idx = np.random.randint(low=0, high=x.shape[-1] - self.size)
         if self.padding_mode == 'constant':
             out = np.full_like(x, fill_value=self.fill, dtype=x.dtype)
@@ -163,24 +209,69 @@ class RandomCropping(Transformation):
 
         return out
 
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
 
 class ChannelShuffling(Transformation):
     def __init__(self):
         super(ChannelShuffling, self).__init__()
 
-    def __call__(self, x: np.ndarray):
+    def apply(self, x: np.ndarray):
         channel_indices = np.arange(x.shape[-2])
         np.random.shuffle(channel_indices)
 
         return x[channel_indices, :]
 
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
 
 class Perturbation(Transformation):
-    def __init__(self):
+    def __init__(self, min_perturbation, max_perturbation):
         super(Perturbation, self).__init__()
 
-    def __call__(self, x: np.ndarray):
+        self.min_perturbation = min_perturbation
+        self.max_perturbation = max_perturbation
+
+    def apply(self, x: np.ndarray):
         pass
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            raise ValueError('Only support for Dict input!')
+        else:
+            assert self.max_perturbation <= x['head'].shape[-1]
+            num_perturbation = np.random.randint(self.min_perturbation, self.max_perturbation + 1)
+            sign = np.random.choice([-1, 1])
+            if sign == -1:
+                out = np.concatenate([x['head'][:, -num_perturbation:], x['mid'][:, :-num_perturbation]], axis=-1)
+            else:
+                out = np.concatenate([x['mid'][:, num_perturbation:], x['tail'][:, :num_perturbation]], axis=-1)
+
+            x['mid'] = out
+            return x
+
+
+class TwoCropsTransform(Transformation):
+    def __init__(self, transform: Transformation):
+        super(TwoCropsTransform, self).__init__()
+
+        self.transform = transform
+
+    def apply(self, x: np.ndarray):
+        pass
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        return [self.transform(x), self.transform(x)]
 
 
 class Compose(Transformation):
@@ -188,6 +279,9 @@ class Compose(Transformation):
         super(Transformation, self).__init__()
 
         self.trans = trans
+
+    def apply(self, x: np.ndarray):
+        pass
 
     def __call__(self, x: np.ndarray):
         out = x

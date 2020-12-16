@@ -2,7 +2,7 @@
 @Time    : 2020/9/17 19:09
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : main.py
+@File    : main_moco.py
 @Software: PyCharm
 @Desc    : 
 """

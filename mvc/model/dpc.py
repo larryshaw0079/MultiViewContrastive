@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from mvc.utils.misc import get_performance
+from mvc.utils.metric import get_performance
 from ..backbone import ResNet, GRU, MLP
 
 
