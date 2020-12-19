@@ -1,1 +1,1 @@
-from .moco import Moco
+from .moco import Moco, MocoClassifier

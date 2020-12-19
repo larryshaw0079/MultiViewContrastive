@@ -8,6 +8,7 @@
 """
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from .moco import Moco
@@ -33,9 +34,25 @@ class CoCLR(Moco):
         self.topk = topk
 
         if network == 'r1d':
-            self.sampler = R1DNet(in_channel, mid_channel, dim, stride=2)
+            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, final_fc=False)
+            self.feature_size = self.backbone.feature_size
+            self.sampler = nn.Sequential(
+                backbone,
+                nn.AdaptiveAvgPool1d((1,)),
+                nn.Conv1d(self.feature_size, self.feature_size, kernel_size=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(self.feature_size, dim, kernel_size=1, bias=True)
+            )
         elif network == 'r2d':
-            self.sampler = R2DNet(in_channel, mid_channel, dim, stride=(2, 2))
+            backbone = R2DNet(in_channel, mid_channel, dim, stride=(2, 2), final_fc=False)
+            self.feature_size = self.backbone.feature_size
+            self.sampler = nn.Sequential(
+                backbone,
+                nn.AdaptiveAvgPool2d((1, 1)),
+                nn.Conv2d(self.feature_size, self.feature_size, kernel_size=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(self.feature_size, dim, kernel_size=1, bias=True)
+            )
         else:
             raise ValueError
 

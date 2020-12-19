@@ -20,8 +20,9 @@ UNIT_CONVERT_FACTOR = 1e6  # V -> uV
 def parse_args(verbose=True):
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data-path', type=str, default='data/sleepedf')
-    parser.add_argument('--dest-path', type=str, default='data/sleepedf_processed')
+    parser.add_argument('--data-path', type=str, required=True)
+    parser.add_argument('--dest-path', type=str, required=True)
+    parser.add_argument('--data-name', type=str, required=True)
     parser.add_argument('--convert-unit', action='store_true')
     parser.add_argument('--extend-edges', action='store_true')
     parser.add_argument('--extend-num', type=int, default=None)
@@ -46,6 +47,9 @@ def parse_args(verbose=True):
 if __name__ == '__main__':
     args = parse_args()
 
+    assert args.data_name in ['sleepedf_39', 'sleepedf_153', 'sleepedf_39_hht',
+                              'sleepedf_153_hht']
+
     if args.extend_edges and args.extend_num is None:
         raise ValueError('Console parameter `extend_num` must be specified when `extend_edges` enabled!')
 
@@ -67,29 +71,39 @@ if __name__ == '__main__':
 
         data = np.load(file_name)
 
-        recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)  # (num_epoch, channel, length)
-        annotations = data['annotation']
+        if args.data_name in ['sleepedf_39', 'sleepedf_153']:
+            recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)  # (num_epoch, channel, length)
+            annotations = data['annotation']
+        elif args.data_name in ['sleepedf_39_hht', 'sleepedf_153_hht']:
+            recordings = data['data']
+            annotations = data['annotation']
+        else:
+            raise ValueError
 
         if args.convert_unit:
+            warnings.warn('You choose to convert the unit from V to uV...')
             recordings *= UNIT_CONVERT_FACTOR
 
         for idx in tqdm(range(recordings.shape[0])):
             if args.extend_edges:
                 if idx == 0:
                     # Pad heading with zeros
-                    sample = np.concatenate([np.zeros(shape=(*(recordings[idx].shape[:-1]), args.extend_num)),
-                                             recordings[idx],
-                                             recordings[idx + 1][:, :args.extend_num]], axis=-1)
+                    head = np.zeros(shape=(*(recordings[idx].shape[:-1]), args.extend_num))
+                    mid = recordings[idx]
+                    # (num_epoch, channel, time) for 1d inputs
+                    # (num_epoch, channel, freq, time) for 2d inputs
+                    tail = recordings[idx + 1][..., :args.extend_num]  # God, numpy's indexing is so awesome!
                 elif idx == recordings.shape[0] - 1:
                     # Pad tail with zeros
-                    sample = np.concatenate([recordings[idx - 1][:, -args.extend_num:],
-                                             recordings[idx],
-                                             np.zeros(shape=(*(recordings[idx].shape[:-1]), args.extend_num))], axis=-1)
+                    head = recordings[idx - 1][..., -args.extend_num:]
+                    mid = recordings[idx]
+                    tail = np.zeros(shape=(*(recordings[idx].shape[:-1]), args.extend_num))
                 else:
                     # No padding
-                    sample = np.concatenate([recordings[idx - 1][:, -args.extend_num:],
-                                             recordings[idx],
-                                             recordings[idx + 1][:, :args.extend_num]], axis=-1)
+                    head = recordings[idx - 1][..., -args.extend_num:]
+                    mid = recordings[idx]
+                    tail = recordings[idx + 1][..., :args.extend_num]
+                sample = np.concatenate([head, mid, tail], axis=-1)
             else:
                 sample = recordings[idx]
             np.savez(os.path.join(args.dest_path, file_prefix, f'{idx}.npz'), data=sample)

@@ -7,19 +7,35 @@
 @Desc    : 
 """
 import abc
-from typing import List, Union, Dict, Any
+import copy
+from typing import List, Union, Dict, Any, Tuple
 
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import interp1d, interp2d
 
 
 def random_curve(length, sigma=0.2, knots=4):
     xx = np.arange(0, length, (length - 1) / (knots + 1))
     yy = np.random.normal(loc=1.0, scale=sigma, size=knots + 2)
     x_range = np.arange(length)
-    interpolator = CubicSpline(xx, yy)
+    # interpolator = CubicSpline(xx, yy)
+    interpolator = interp1d(xx, yy, kind='cubic')
 
     return interpolator(x_range)
+
+
+def random_curve_2d(height, width, sigma=0.2, knots=(4, 4)):
+    xx = np.arange(0, width, (width - 1) / (knots[0] + 1))
+    yy = np.arange(0, height, (height - 1) / (knots[1] + 1))
+    zz = np.random.normal(loc=1.0, scale=sigma, size=(knots[0] + 2, knots[1] + 2))
+
+    x_new = np.arange(width)
+    y_new = np.arange(height)
+
+    # interpolator = CubicSpline(xx, yy)
+    interpolator = interp2d(xx, yy, zz, kind='cubic')
+
+    return interpolator(x_new, y_new)
 
 
 class Transformation(abc.ABC):
@@ -41,6 +57,36 @@ class Transformation(abc.ABC):
         pass
 
 
+class TwoCropsTransform(Transformation):
+    def __init__(self, transform: Transformation):
+        super(TwoCropsTransform, self).__init__()
+
+        self.transform = transform
+
+    def apply(self, x: np.ndarray):
+        pass
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        return [self.transform(x), self.transform(x)]
+
+
+class Compose(Transformation):
+    def __init__(self, trans: List[Transformation]):
+        super(Transformation, self).__init__()
+
+        self.trans = trans
+
+    def apply(self, x: np.ndarray):
+        pass
+
+    def __call__(self, x: np.ndarray):
+        out = copy.deepcopy(x)
+        for transformation in self.trans:
+            out = transformation(out)
+
+        return out
+
+
 class Jittering(Transformation):
     def __init__(self, loc: float = 0.0, sigma: float = 1.0):
         super(Jittering, self).__init__()
@@ -59,9 +105,9 @@ class Jittering(Transformation):
             return x
 
 
-class HorizontalFlipping(Transformation):
+class Flipping(Transformation):
     def __init__(self, randomize: bool = True):
-        super(HorizontalFlipping, self).__init__()
+        super(Flipping, self).__init__()
 
         self.randomize = randomize
 
@@ -79,9 +125,9 @@ class HorizontalFlipping(Transformation):
             return x
 
 
-class VerticalFlipping(Transformation):
+class Negating(Transformation):
     def __init__(self, randomize: bool = True):
-        super(VerticalFlipping, self).__init__()
+        super(Negating, self).__init__()
 
         self.randomize = randomize
 
@@ -222,7 +268,7 @@ class ChannelShuffling(Transformation):
         super(ChannelShuffling, self).__init__()
 
     def apply(self, x: np.ndarray):
-        channel_indices = np.arange(x.shape[-2])
+        channel_indices = np.arange(x.shape[0])
         np.random.shuffle(channel_indices)
 
         return x[channel_indices, :]
@@ -261,31 +307,196 @@ class Perturbation(Transformation):
             return x
 
 
-class TwoCropsTransform(Transformation):
-    def __init__(self, transform: Transformation):
-        super(TwoCropsTransform, self).__init__()
+class Jittering2d(Transformation):
+    def __init__(self, loc: float = 0.0, sigma: float = 1.0):
+        super(Jittering2d, self).__init__()
 
-        self.transform = transform
+        self.loc = loc
+        self.sigma = sigma
 
     def apply(self, x: np.ndarray):
-        pass
+        return x + self.sigma * np.random.randn(*x.shape) + self.loc
 
     def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
-        return [self.transform(x), self.transform(x)]
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
 
 
-class Compose(Transformation):
-    def __init__(self, trans: List[Transformation]):
-        super(Transformation, self).__init__()
+class Flipping2d(Transformation):
+    def __init__(self, axis: str = 'both', randomize: bool = True):
+        super(Flipping2d, self).__init__()
 
-        self.trans = trans
+        assert axis in ['both', 'freq', 'time']
+
+        self.axis = axis
+        self.randomize = randomize
 
     def apply(self, x: np.ndarray):
-        pass
+        if self.randomize:
+            if self.axis == 'freq':
+                return np.flip(x, axis=-2)
+            elif self.axis == 'time':
+                return np.flip(x, axis=-1)
+            else:
+                out = x
+                if np.random.randint(low=0, high=2) == 0:
+                    out = np.flip(out, axis=-1)
+                if np.random.randint(low=0, high=2) == 0:
+                    out = np.flip(out, axis=-2)
+                return out
+        else:
+            if self.axis == 'freq':
+                return np.flip(x, axis=-2)
+            elif self.axis == 'time':
+                return np.flip(x, axis=-1)
+            else:
+                return np.flip(np.flip(x, axis=-2), axis=-1)
 
-    def __call__(self, x: np.ndarray):
-        out = x
-        for transformation in self.trans:
-            out = transformation(out)
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
+
+class Negating2d(Transformation):
+    def __init__(self, randomize: bool = True):
+        super(Negating2d, self).__init__()
+
+        self.randomize = randomize
+
+    def apply(self, x: np.ndarray):
+        if self.randomize:
+            return -x if np.random.randint(low=0, high=2) == 1 else x
+        else:
+            return -x
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
+
+class Scaling2d(Transformation):
+    def __init__(self, scale_factor: float = 0.2, direction: str = 'both', randomize: bool = True):
+        super(Scaling2d, self).__init__()
+
+        assert direction in ['both', 'increase', 'decrease']
+
+        self.scale_factor = scale_factor
+        self.direction = direction
+        self.randomize = randomize
+
+    def apply(self, x: np.ndarray):
+        if self.direction == 'both':
+            if self.randomize:
+                return x * (1.0 + self.scale_factor * np.random.randint(low=-1, high=2))
+            else:
+                raise ValueError('`randomize` must be `True` when `direction` is `both`!')
+        elif self.direction == 'increase':
+            if self.randomize:
+                return x * (1.0 + self.scale_factor * np.random.randint(low=0, high=2))
+            else:
+                return x * (1.0 + self.scale_factor)
+        elif self.direction == 'decrease':
+            if self.randomize:
+                return x * (1.0 + self.scale_factor * np.random.randint(low=-1, high=1))
+            else:
+                return x * (1.0 - self.scale_factor)
+        else:
+            raise ValueError
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
+
+class RandomCropping2d(Transformation):
+    def __init__(self, size: Union[int, Tuple[int]], fill: float = 0.0, padding_mode: str = 'constant'):
+        super(RandomCropping2d, self).__init__()
+
+        assert padding_mode in ['constant']
+
+        if isinstance(size, int):
+            size = (size, size)
+        elif isinstance(size, tuple):
+            assert len(size) == 2
+        else:
+            raise ValueError
+
+        self.size = size
+        self.fill = fill
+        self.padding_mode = padding_mode
+
+    def apply(self, x: np.ndarray):
+        start_idx_freq = np.random.randint(low=0, high=x.shape[-2] - self.size[-2])
+        start_idx_time = np.random.randint(low=0, high=x.shape[-1] - self.size[-1])
+        offset_f, offset_t = self.size
+
+        if self.padding_mode == 'constant':
+            out = np.full_like(x, fill_value=self.fill, dtype=x.dtype)
+            out[:, start_idx_freq: start_idx_freq + offset_f, start_idx_time: start_idx_time + offset_t] = \
+                x[:, start_idx_freq: start_idx_freq + offset_f, start_idx_time: start_idx_time + offset_t]
+        else:
+            raise ValueError
 
         return out
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
+
+class ChannelShuffling2d(Transformation):
+    def __init__(self):
+        super(ChannelShuffling2d, self).__init__()
+
+    def apply(self, x: np.ndarray):
+        channel_indices = np.arange(x.shape[0])
+        np.random.shuffle(channel_indices)
+
+        return x[channel_indices, :, :]
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x
+
+
+class MagnitudeWarping2d(Transformation):
+    def __init__(self, sigma: float = 1.0, knots: Union[int, Tuple[int]] = 4):
+        super(MagnitudeWarping2d, self).__init__()
+
+        if isinstance(knots, int):
+            knots = (knots, knots)
+        elif isinstance(knots, tuple):
+            assert len(knots) == 2
+        else:
+            raise ValueError
+
+        self.sigma = sigma
+        self.knots = knots
+
+    def apply(self, x: np.ndarray):
+        return x * random_curve_2d(*x.shape[1:], self.sigma, self.knots)
+
+    def __call__(self, x: Union[np.ndarray, Dict[str, Any]]):
+        if isinstance(x, np.ndarray):
+            return self.apply(x)
+        else:
+            x['mid'] = self.apply(x['mid'])
+            return x

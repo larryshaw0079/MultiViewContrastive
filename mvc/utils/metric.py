@@ -6,9 +6,9 @@
 @Software: PyCharm
 @Desc    : 
 """
+import numpy as np
 import torch
-
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
 
 def logits_accuracy(output, target, topk=(1,)):
@@ -28,9 +28,15 @@ def logits_accuracy(output, target, topk=(1,)):
         return res
 
 
-def get_performance(predictions, labels):
+def get_performance(scores: np.ndarray, labels: np.ndarray):
+    predictions = np.argmax(scores, axis=1)
+
     accuracy = accuracy_score(labels, predictions)
     f1_micro = f1_score(labels, predictions, average='micro')
     f1_macro = f1_score(labels, predictions, average='macro')
 
-    return {'accuracy': accuracy, 'f1_micro': f1_micro, 'f1_macro': f1_macro}
+    cm = confusion_matrix(labels, predictions)
+    accuracy_per_class = cm.diagonal() / cm.sum(axis=1)
+
+    return {'accuracy': accuracy, 'accuracy_per_class': accuracy_per_class.tolist(),
+            'f1_micro': f1_micro, 'f1_macro': f1_macro}
