@@ -8,6 +8,9 @@
 """
 import math
 
+import torch
+import torch.nn.functional as F
+
 
 def adjust_learning_rate(optimizer, lr, epoch, total_epochs, args):
     """Decay the learning rate based on schedule"""
@@ -18,3 +21,27 @@ def adjust_learning_rate(optimizer, lr, epoch, total_epochs, args):
             lr *= 0.1 if epoch >= milestone else 1.
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+
+# class MultiNCELoss(nn.Module):
+#     def __init__(self, reduction = 'mean'):
+#         super(MultiNCELoss, self).__init__()
+#
+#         assert reduction in ['none', 'mean', 'sum']
+#         self.reduction = reduction
+#
+#     def forward(self, outputs, targets):
+#         mask_sum = targets.sum(1)
+#         loss = - torch.log((F.softmax(outputs, dim=1) * targets).sum(1))
+#
+#         if self.reduction == 'mean':
+#             return loss.mean()
+#         elif self.reduction == 'sum':
+#             return loss.sum()
+#         else:
+#             return loss
+
+def multi_nce_loss(logits, mask):
+    mask_sum = mask.sum(1)
+    loss = - torch.log((F.softmax(logits, dim=1) * mask).sum(1))
+    return loss.mean()

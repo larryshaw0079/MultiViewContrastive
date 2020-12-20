@@ -12,17 +12,9 @@ from typing import List, Union, Tuple
 import lmdb
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 from .transformation import Transformation
-
-
-def get_training_dataset(lmdb_path, meta_file, num_channel, length, num_extend, transform):
-    pass
-
-
-def get_evaluation_dataset():
-    pass
 
 
 class LmdbDataset(Dataset):
@@ -54,14 +46,14 @@ class LmdbDataset(Dataset):
 class LmdbDatasetWithEdges(Dataset):
     def __init__(self, lmdb_path, meta_file, num_channel, size: Union[int, Tuple[int]], num_extend,
                  patients: List = None,
-                 transform: Transformation = None):
+                 transform: Transformation = None, return_idx: bool = False):
         self.lmdb_path = lmdb_path
         with open(meta_file, 'rb') as f:
             self.meta_info = pickle.load(f)
         self.num_channel = num_channel
         if isinstance(size, int):
             size = (size,)
-            self.full_shape = (num_channel, size)
+            self.full_shape = (num_channel, *size)
         elif isinstance(size, tuple):
             assert len(size) == 2
             self.full_shape = (num_channel, *size)
@@ -71,6 +63,7 @@ class LmdbDatasetWithEdges(Dataset):
         self.num_extend = num_extend
         self.transform = transform
         self.patients = patients
+        self.return_idx = return_idx
 
         self.env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
 
@@ -105,16 +98,47 @@ class LmdbDatasetWithEdges(Dataset):
 
         label = self.labels[item]
 
-        return data, label
+        if self.return_idx:
+            return data, label, item
+        else:
+            return data, label
 
     def __len__(self):
         return self.len
 
     def __repr__(self):
         return f"""
-            ***********************************
-            Dataset Summary:
-            # Instance: {self.len}
-            Shape: {self.full_shape}
-            ***********************************
+**********************************************************************
+Dataset Summary:
+# Instance: {self.len}
+Shape of an Instance: {self.full_shape}
+Selected patients: {self.patients}
+**********************************************************************
         """
+
+
+class TwoDataset(Dataset):
+    def __init__(self, dataset1, dataset2):
+        assert len(dataset1) == len(dataset2)
+
+        self.dataset1 = dataset1
+        self.dataset2 = dataset2
+
+    def __getitem__(self, item):
+        return *self.dataset1[item], *self.dataset2[item]
+
+    def __len__(self):
+        return len(self.dataset1)
+
+
+class ShuffleSampler(Sampler):
+    def __init__(self, data_source, total_len):
+        super(ShuffleSampler, self).__init__(data_source)
+
+        self.total_len = total_len
+
+    def __iter__(self):
+        yield from torch.randperm(self.total_len)
+
+    def __len__(self):
+        return self.total_len

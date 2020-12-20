@@ -10,15 +10,16 @@ import argparse
 import os
 import pickle
 import random
+import shutil
 import warnings
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
-from torch.utils.tensorboard import SummaryWriter
 from tqdm.std import tqdm
 
 from mvc.data import LmdbDatasetWithEdges, transformation
@@ -81,14 +82,16 @@ def parse_args(verbose=True):
     parser.add_argument('--aug', dest='augmentation', type=str, nargs='+', default=None)
 
     # Training
+    parser.add_argument('--only-pretrain', action='store_true')
     parser.add_argument('--devices', type=int, nargs='+', default=None)
-    parser.add_argument('--fold', type=int, default=20)
+    parser.add_argument('--fold', type=int, default=0)
+    parser.add_argument('--kfold', type=int, default=10)
     parser.add_argument('--pretrain-epochs', type=int, default=200)
     parser.add_argument('--finetune-epochs', type=int, default=10)
     parser.add_argument('--finetune-ratio', type=float, default=0.1)
     parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
     parser.add_argument('--lr-schedule', type=int, nargs='*', default=[120, 160])
-    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--num-workers', type=int, default=4)
 
     # Optimization
@@ -106,7 +109,7 @@ def parse_args(verbose=True):
                         help='softmax temperature (default: 0.07)')
 
     # Misc
-    parser.add_argument('--tensorboard', action='store_true')
+    parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--disp-interval', type=int, default=20)
     parser.add_argument('--seed', type=int, default=None)
 
@@ -172,7 +175,7 @@ def get_augmentations(augmentation_list, two_crop=False):
         return transformation.Compose(augmentation)
 
 
-def pretrain(model, dataset, device, args):
+def pretrain(model, dataset, device, run_id, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
@@ -203,12 +206,19 @@ def pretrain(model, dataset, device, args):
                 optimizer.step()
 
                 losses.append(loss.item())
-                accuracies.append(logits_accuracy(output, target, topk=(1,))[0])
+                acc = logits_accuracy(output, target, topk=(1,))[0]
+                accuracies.append(acc)
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
+        if args.wandb:
+            wandb.log({
+                "pretrain_loss": np.mean(losses),
+                "pretrain_acc": np.mean(accuracies)
+            })
+
         if (epoch + 1) % args.save_interval == 0:
-            torch.save(model.state_dict(), os.path.join(args.save_path, f'model_pretrain_{epoch}.pth.tar'))
+            torch.save(model.state_dict(), os.path.join(args.save_path, f'moco_run_{run_id}_pretrain_{epoch}.pth.tar'))
 
 
 def finetune(classifier, dataset, device, args):
@@ -248,6 +258,12 @@ def finetune(classifier, dataset, device, args):
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
+        if args.wandb:
+            wandb.log({
+                "finetune_loss": np.mean(losses),
+                "finetune_acc": np.mean(accuracies)
+            })
+
 
 def evaluate(classifier, dataset, device, args):
     data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
@@ -272,17 +288,13 @@ def evaluate(classifier, dataset, device, args):
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
-    if args.tensorboard:
-        writer = SummaryWriter(os.path.join(args.save_path, f'runs/run_{run_id}/'))
-
     # Pretraining
     model = Moco(network=args.network, device=device, in_channel=args.channels, mid_channel=16, dim=args.feature_dim,
                  K=args.moco_k, m=args.moco_m, T=args.moco_t)
     model.cuda(device)
 
-    if args.tensorboard:
-        writer.add_graph(model, [torch.randn(args.batch_size, args.channels, args.size).cuda(device),
-                                 torch.randn(args.batch_size, args.channels, args.size).cuda(device)])
+    if args.wandb:
+        wandb.watch(model)
 
     # for name, param in model.named_parameters():
     #     print(name, param.shape)
@@ -302,8 +314,11 @@ def main_worker(run_id, device, train_patients, test_patients, args):
                                          transform=train_augmentation)
     print(train_dataset)
 
-    pretrain(model, train_dataset, device, args)
-    torch.save(model.state_dict(), os.path.join(args.save_path, 'model_pretrained.pth.tar'))
+    pretrain(model, train_dataset, device, run_id, args)
+    torch.save(model.state_dict(), os.path.join(args.save_path, f'moco_run_{run_id}_pretrained.pth.tar'))
+
+    if args.only_pretrain:
+        return
 
     # Finetuning
     classifier = MocoClassifier(network=args.network, device=device, in_channel=args.channels, mid_channel=16,
@@ -334,7 +349,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
                                                 args.freq_len, args.time_len), num_extend=args.num_extend,
                                             patients=train_patients, transform=finetune_augmentation)
     finetune(classifier, finetune_dataset, device, args)
-    torch.save(classifier.state_dict(), os.path.join(args.save_path, 'classifier_finetuned.pth.tar'))
+    torch.save(classifier.state_dict(), os.path.join(args.save_path, f'moco_run_{run_id}_finetuned.pth.tar'))
 
     # Evaluation
     if args.network == 'r1d':
@@ -349,6 +364,15 @@ def main_worker(run_id, device, train_patients, test_patients, args):
 
     scores, targets = evaluate(classifier, test_dataset, device, args)
     performance = get_performance(scores, targets)
+
+    if args.wandb:
+        wandb.log({
+            'accuracy': performance['accuracy'],
+            'f1_micro': performance['f1_micro'],
+            'f1_macro': performance['f1_macro'],
+            'accuracy_per_class': performance['accuracy_per_class']
+        })
+
     with open(os.path.join(args.save_path, f'performance_{run_id}.pkl'), 'wb') as f:
         pickle.dump(performance, f)
     print(performance)
@@ -356,6 +380,11 @@ def main_worker(run_id, device, train_patients, test_patients, args):
 
 if __name__ == '__main__':
     args = parse_args()
+
+    if args.wandb:
+        with open('./data/wandb.txt', 'r') as f:
+            os.environ['WANDB_API_KEY'] = f.readlines()[0]
+        wandb.init(project='MVC', group=f'MOCO_{args.network}', config=args)
 
     if args.seed is not None:
         setup_seed(args.seed)
@@ -367,6 +396,10 @@ if __name__ == '__main__':
     if not os.path.exists(args.save_path):
         warnings.warn(f'The path {args.save_path} dost not existed, created...')
         os.makedirs(args.save_path)
+    else:
+        warnings.warn(f'The path {args.save_path} already exists, deleted...')
+        shutil.rmtree(args.save_path)
+        os.makedirs(args.save_path)
 
     print(f'[INFO] Using devices {devices}...')
 
@@ -374,12 +407,12 @@ if __name__ == '__main__':
         meta_info = pickle.load(f)
         patients = np.unique(meta_info['patient'])
 
-    assert args.fold <= len(patients)
-    kf = KFold(n_splits=args.fold)
+    assert args.kfold <= len(patients)
+    assert args.fold < args.kfold
+    kf = KFold(n_splits=args.kfold)
     for i, (train_index, test_index) in enumerate(kf.split(patients)):
-        print(f'[INFO] Running cross validation for {i + 1}/{args.fold} fold...')
-        train_patients, test_patients = patients[train_index], patients[test_index]
-        main_worker(i, devices[0], train_patients.tolist(), test_patients.tolist(), args)
-
-        # TODO only run 1 fold now
-        break
+        if i == args.fold:
+            print(f'[INFO] Running cross validation for {i + 1}/{args.kfold} fold...')
+            train_patients, test_patients = patients[train_index], patients[test_index]
+            main_worker(i, devices[0], train_patients.tolist(), test_patients.tolist(), args)
+            break
