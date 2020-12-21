@@ -15,28 +15,35 @@ import torch.nn as nn
 import torch.optim as optim
 
 from mvc.utils.metric import get_performance
-from ..backbone import ResNet, GRU, MLP
+from ..backbone import R1DNet, R2DNet, GRU, MLP
 
 
-class DPC(object):
-    def __init__(self, num_seq, input_channel, input_length, feature_dim, pred_steps, batch_size, device, args):
-        self.num_seq = num_seq
-        self.input_channel = input_channel
-        self.input_length = input_length
+class DPC(nn.Module):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_seq, batch_size,
+                 kernel_sizes, device):
+        super(DPC, self).__init__()
+
+        self.network = network
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
         self.batch_size = batch_size
+        self.kernel_sizes = kernel_sizes
+        self.num_seq = num_seq
         self.device = device
 
-        self.encoder = ResNet()
-        self.gru = GRU()
-        self.predictor = MLP()
-        self.classifier = MLP()
-
-        self.encoder = self.encoder.to(device)
-        self.gru = self.gru.to(device)
-        self.predictor = self.predictor.to(device)
-        self.classifier = self.classifier.to(device)
+        if network == 'r1d':
+            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=3, final_fc=True)
+            self.feature_size = self.encoder.feature_size
+        elif network == 'r2d':
+            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+                                  final_fc=True)
+            self.feature_size = self.encoder.feature_size
+        else:
+            raise ValueError
+        self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2)
+        self.predictor = MLP(input_dim=feature_dim, output_dim=feature_dim)
 
     def pretrain(self, data_loader, args):
         if args.optimizer == 'sgd':

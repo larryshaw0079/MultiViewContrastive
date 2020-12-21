@@ -24,7 +24,12 @@ from tqdm.std import tqdm
 
 from mvc.data import LmdbDatasetWithEdges, transformation
 from mvc.model import Moco, MocoClassifier
-from mvc.utils import logits_accuracy, adjust_learning_rate, get_performance
+from mvc.utils import (
+    logits_accuracy,
+    adjust_learning_rate,
+    get_performance,
+    representation_to_tsv
+)
 
 AVAILABLE_1D_TRANSFORMATIONS = [
     'perturbation',
@@ -75,6 +80,7 @@ def parse_args(verbose=True):
     parser.add_argument('--freq-len', type=int, default=None)
     parser.add_argument('--num-extend', type=int, default=500)
     parser.add_argument('--classes', type=int, default=5)
+    parser.add_argument('--write-embedding', action='store_true')
 
     # Model
     parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
@@ -89,9 +95,10 @@ def parse_args(verbose=True):
     parser.add_argument('--pretrain-epochs', type=int, default=200)
     parser.add_argument('--finetune-epochs', type=int, default=10)
     parser.add_argument('--finetune-ratio', type=float, default=0.1)
+    parser.add_argument('--finetune-mode', type=str, default='freeze', choices=['freeze', 'smaller', 'all'])
     parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
     parser.add_argument('--lr-schedule', type=int, nargs='*', default=[120, 160])
-    parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--num-workers', type=int, default=4)
 
     # Optimization
@@ -196,7 +203,7 @@ def pretrain(model, dataset, device, run_id, args):
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
                 q, k = x[0], x[1]
-                q, k = k.cuda(device, non_blocking=True), q.cuda(device, non_blocking=True)
+                q, k = q.cuda(device, non_blocking=True), k.cuda(device, non_blocking=True)
 
                 output, target = model(q, k)
                 loss = criterion(output, target)
@@ -222,10 +229,30 @@ def pretrain(model, dataset, device, run_id, args):
 
 
 def finetune(classifier, dataset, device, args):
+    params = []
+    if args.finetune_mode == 'freeze':
+        print('[INFO] Finetune classifier only for the last layer...')
+        for name, param in classifier.named_parameters():
+            if 'backbone' in name:
+                param.requires_grad = False
+            else:
+                params.append({'params': param})
+    elif args.finetune_mode == 'smaller':
+        print('[INFO] Finetune the whole classifier where the backbone have a smaller lr...')
+        for name, param in classifier.named_parameters():
+            if 'backbone' in name:
+                params.append({'params': param, 'lr': args.lr / 10})
+            else:
+                params.append({'params': param})
+    else:
+        print('[INFO] Finetune the whole classifier...')
+        for name, param in classifier.named_parameters():
+            params.append({'params': param})
+
     if args.optimizer == 'sgd':
-        optimizer = optim.SGD(classifier.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+        optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(classifier.parameters(), lr=args.lr, weight_decay=args.wd)
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
     else:
         raise ValueError('Invalid optimizer!')
 
@@ -287,6 +314,36 @@ def evaluate(classifier, dataset, device, args):
     return scores, targets
 
 
+def write_embedding(model, device, args):
+    if args.network == 'r1d':
+        emb_augmentation = get_augmentations(['jittering'], two_crop=False)
+    else:
+        emb_augmentation = get_augmentations(['jittering2d'], two_crop=False)
+    emb_dataset = LmdbDatasetWithEdges(lmdb_path=args.data_path, meta_file=args.meta_file,
+                                       num_channel=args.channels,
+                                       size=args.time_len if args.freq_len is None else (
+                                           args.freq_len, args.time_len), num_extend=args.num_extend,
+                                       patients=train_patients, transform=emb_augmentation)
+    data_loader = DataLoader(emb_dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=True, pin_memory=True, drop_last=True)
+    encoder = model.encoder_q
+    embeddings = []
+    labels = []
+    encoder.eval()
+    print('[INFO] Writing embeddings...')
+    for x, y in tqdm(data_loader, desc='EMBEDDING'):
+        x = x.cuda(device, non_blocking=True)
+        with torch.no_grad():
+            z = encoder(x)
+            embeddings.append(z.cpu().numpy())
+            labels.append(y.numpy())
+
+    embeddings = np.concatenate(embeddings)
+    labels = np.concatenate(labels)
+
+    representation_to_tsv(embeddings, dest_path=args.save_path, labels=labels)
+
+
 def main_worker(run_id, device, train_patients, test_patients, args):
     # Pretraining
     model = Moco(network=args.network, device=device, in_channel=args.channels, mid_channel=16, dim=args.feature_dim,
@@ -317,17 +374,29 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     pretrain(model, train_dataset, device, run_id, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'moco_run_{run_id}_pretrained.pth.tar'))
 
+    if args.write_embedding:
+        write_embedding(model, device, args)
+
     if args.only_pretrain:
         return
 
     # Finetuning
+    if args.finetune_mode == 'freeze':
+        use_dropout = False
+        use_l2_norm = True
+        use_final_bn = True
+    else:
+        use_dropout = True
+        use_l2_norm = False
+        use_final_bn = False
+
     classifier = MocoClassifier(network=args.network, device=device, in_channel=args.channels, mid_channel=16,
                                 dim=args.feature_dim,
                                 num_class=5,
                                 dropout=0.5,
-                                use_dropout=False,
-                                use_l2_norm=True,
-                                use_final_bn=True)
+                                use_dropout=use_dropout,
+                                use_l2_norm=use_l2_norm,
+                                use_final_bn=use_final_bn)
     classifier.cuda(device)
 
     state_dict = model.state_dict()

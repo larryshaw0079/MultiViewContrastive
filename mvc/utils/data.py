@@ -11,7 +11,19 @@ import pickle
 
 import lmdb
 import numpy as np
+import pandas as pd
 from tqdm.std import tqdm
+
+
+def representation_to_tsv(representations: np.ndarray, dest_path: str, labels: np.ndarray = None):
+    assert representations.ndim == 2
+
+    df = pd.DataFrame(representations, columns=[f'dim{i + 1}' for i in range(representations.shape[1])])
+    df.to_csv(os.path.join(dest_path, 'representation.tsv'), sep='\t', index=False)
+    if labels is not None:
+        assert len(labels) == len(representations)
+        df = pd.DataFrame(labels.reshape(-1, 1), columns=['label'])
+        df.to_csv(os.path.join(dest_path, 'label.tsv', sep='\t', index=False))
 
 
 def folder_to_lmdb(data_path, dest_file, commit_interval):

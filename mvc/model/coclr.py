@@ -35,7 +35,7 @@ class CoCLR(Moco):
         self.topk = topk
 
         if second_network == 'r1d':
-            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, final_fc=False)
+            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=3, final_fc=False)
             self.feature_size = backbone.feature_size
             self.sampler = nn.Sequential(
                 backbone,

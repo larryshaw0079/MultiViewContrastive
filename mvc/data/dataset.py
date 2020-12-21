@@ -107,14 +107,14 @@ class LmdbDatasetWithEdges(Dataset):
         return self.len
 
     def __repr__(self):
-        return f"""
+        return """
 **********************************************************************
 Dataset Summary:
-# Instance: {self.len}
-Shape of an Instance: {self.full_shape}
-Selected patients: {self.patients}
+# Instance: {}
+Shape of an Instance: {}
+Selected patients: {}
 **********************************************************************
-        """
+        """.format(self.len, self.full_shape, self.patients)
 
 
 class TwoDataset(Dataset):

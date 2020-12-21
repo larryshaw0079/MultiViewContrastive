@@ -135,7 +135,7 @@ class R2DBlock(nn.Module):
         )
 
         self.downsample = nn.Sequential(
-            nn.Conv1d(in_channel, out_channel, kernel_size=(1, 1), stride=stride, bias=False),
+            nn.Conv2d(in_channel, out_channel, kernel_size=(1, 1), stride=stride, bias=False),
             nn.BatchNorm2d(out_channel)
         )
         self.relu = nn.ReLU(inplace=True)

@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 
-def summary_repr(model, input_size, batch_size=-1, device=torch.device('cuda:0'), dtypes=None):
+def summary_repr(model, input_size, batch_size=-1, title='', device=torch.device('cuda:0'), dtypes=None):
     if dtypes == None:
         dtypes = [torch.FloatTensor] * len(input_size)
 
@@ -73,6 +73,10 @@ def summary_repr(model, input_size, batch_size=-1, device=torch.device('cuda:0')
     for h in hooks:
         h.remove()
 
+    if title != '':
+        summary_str += "----------------------------------------------------------------" + "\n"
+        line_new = "{:^20}".format(title)
+        summary_str += line_new + "\n"
     summary_str += "----------------------------------------------------------------" + "\n"
     line_new = "{:>20}  {:>25} {:>15}".format(
         "Layer (type)", "Output Shape", "Param #")
@@ -90,7 +94,6 @@ def summary_repr(model, input_size, batch_size=-1, device=torch.device('cuda:0')
         )
         total_params += summary[layer]["nb_params"]
 
-        print('--------------', summary[layer]["output_shape"])
         total_output += np.prod(summary[layer]["output_shape"])
         if "trainable" in summary[layer]:
             if summary[layer]["trainable"] == True:
@@ -120,9 +123,9 @@ def summary_repr(model, input_size, batch_size=-1, device=torch.device('cuda:0')
     return summary_str, (total_params, trainable_params)
 
 
-def model_summary(model, input_size, batch_size=-1, device=torch.device('cuda:0'), dtypes=None):
+def model_summary(model, input_size, batch_size=-1, title='', device=torch.device('cuda:0'), dtypes=None):
     result, params_info = summary_repr(
-        model, input_size, batch_size, device, dtypes)
+        model, input_size, batch_size, title, device, dtypes)
     print(result)
 
     return params_info
