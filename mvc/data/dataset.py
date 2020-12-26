@@ -6,6 +6,7 @@
 @Software: PyCharm
 @Desc    : 
 """
+import os
 import pickle
 from typing import List, Union, Tuple
 
@@ -41,6 +42,65 @@ class LmdbDataset(Dataset):
 
     def __len__(self):
         return self.size
+
+
+class SleepDataset(Dataset):
+    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, verbose=True):
+        assert isinstance(patietns, list)
+
+        self.data_path = data_path
+        self.data_name = data_name
+        self.patients = patietns
+
+        self.data = []
+        self.labels = []
+
+        for i, patient in enumerate(patietns):
+            if verbose:
+                print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
+            data = np.load(os.path.join(data_path, patient))
+            if data_name == 'sleepedf':
+                recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)
+                annotations = data['annotation']
+
+                if verbose:
+                    print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
+                recordings = recordings[:(recordings.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch,
+                                                                                                 *recordings.shape[1:])
+                annotations = annotations[:(annotations.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch)
+
+                assert recordings.shape[:2] == annotations.shape[:2]
+
+                self.data.append(recordings)
+                self.labels.append(annotations)
+            else:
+                raise ValueError
+
+        self.data = np.concatenate(self.data)
+        self.labels = np.concatenate(self.labels)
+        self.full_shape = self.data[0].shape
+
+    def __getitem__(self, item):
+        x = self.data[item]
+        y = self.labels[item]
+
+        x = torch.from_numpy(x.astype(np.float32))
+        y = torch.from_numpy(y.astype(np.long))
+
+        return x, y
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        return """
+**********************************************************************
+Dataset Summary:
+# Instance: {}
+Shape of an Instance: {}
+Selected patients: {}
+**********************************************************************
+            """.format(len(self.data), self.full_shape, self.patients)
 
 
 class LmdbDatasetWithEdges(Dataset):

@@ -5,7 +5,7 @@
 Run Moco R1d
 
 ```bash
-python main_moco.py --data-path data/sleepedf_39.lmdb/ --meta-file data/sleepedf_39_split/meta.pkl --network r1d --time-len 3000 --devices 0 --fold 0 --kfold 10 --optimizer sgd
+python main_moco.py --data-path data/sleepedf_39.lmdb/ --meta-file data/sleepedf_39_split/meta.pkl --network r1d --time-len 3000 --fold 0 --kfold 10 --optimizer sgd --device 0
 ```
 
 Run Moco R2d

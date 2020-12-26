@@ -79,7 +79,7 @@ def parse_args(verbose=True):
     parser.add_argument('--freq-len-v2', type=int, default=100)
     parser.add_argument('--num-extend-v1', type=int, default=500)
     parser.add_argument('--num-extend-v2', type=int, default=10)
-    parser.add_argument('--save-path', type=str, default='cache/')
+    parser.add_argument('--save-path', type=str, default='cache/tmp')
     parser.add_argument('--save-interval', type=int, default=10)
     parser.add_argument('--classes', type=int, default=5)
 

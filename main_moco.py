@@ -72,8 +72,10 @@ def parse_args(verbose=True):
     # Dataset & saving & loading
     parser.add_argument('--data-path', type=str, required=True)
     parser.add_argument('--data-name', type=str, default='sleepedf', choices=['sleepedf', 'isruc'])
-    parser.add_argument('--save-path', type=str, default='cache/')
+    parser.add_argument('--save-path', type=str, default='cache/tmp')
     parser.add_argument('--save-interval', type=int, default=10)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--load-path', type=str, default=None)
     parser.add_argument('--meta-file', type=str, required=True)
     parser.add_argument('--channels', type=int, default=2)
     parser.add_argument('--time-len', type=int, default=3000)
@@ -335,11 +337,14 @@ def write_embedding(model, device, args):
         x = x.cuda(device, non_blocking=True)
         with torch.no_grad():
             z = encoder(x)
+            z = z.squeeze()
             embeddings.append(z.cpu().numpy())
             labels.append(y.numpy())
 
     embeddings = np.concatenate(embeddings)
     labels = np.concatenate(labels)
+
+    print(embeddings.shape)
 
     representation_to_tsv(embeddings, dest_path=args.save_path, labels=labels)
 
@@ -371,7 +376,12 @@ def main_worker(run_id, device, train_patients, test_patients, args):
                                          transform=train_augmentation)
     print(train_dataset)
 
-    pretrain(model, train_dataset, device, run_id, args)
+    if args.resume:
+        assert args.load_path is not None
+        print('[INFO] Loading from pretrained weights...')
+        model.load_state_dict(torch.load(args.load_path))
+    else:
+        pretrain(model, train_dataset, device, run_id, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'moco_run_{run_id}_pretrained.pth.tar'))
 
     if args.write_embedding:
@@ -465,7 +475,7 @@ if __name__ == '__main__':
     if not os.path.exists(args.save_path):
         warnings.warn(f'The path {args.save_path} dost not existed, created...')
         os.makedirs(args.save_path)
-    else:
+    elif not args.resume:
         warnings.warn(f'The path {args.save_path} already exists, deleted...')
         shutil.rmtree(args.save_path)
         os.makedirs(args.save_path)

@@ -7,20 +7,16 @@
 @Desc    : 
 """
 
-import itertools
-
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 
-from mvc.utils.metric import get_performance
-from ..backbone import R1DNet, R2DNet, GRU, MLP
+from ..backbone import R1DNet, R2DNet, ConvGRU1d, ConvGRU2d
 
 
 class DPC(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_seq, batch_size,
-                 kernel_sizes, device):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
         super(DPC, self).__init__()
 
         self.network = network
@@ -28,9 +24,141 @@ class DPC(nn.Module):
         self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
-        self.batch_size = batch_size
-        self.kernel_sizes = kernel_sizes
-        self.num_seq = num_seq
+        self.device = device
+
+        if network == 'r1d':
+            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=3, final_fc=False)
+            feature_size = self.encoder.feature_size
+            self.feature_size = feature_size
+            self.agg = ConvGRU1d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
+                                 num_layers=1, device=device)
+            self.predictor = nn.Sequential(
+                nn.Conv1d(feature_size, feature_size, kernel_size=1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(feature_size, feature_size, kernel_size=1, padding=0, bias=True)
+            )
+        elif network == 'r2d':
+            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+                                  final_fc=False)
+            feature_size = self.encoder.feature_size
+            self.feature_size = feature_size
+            self.agg = ConvGRU2d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
+                                 num_layers=1, device=device)
+            self.predictor = nn.Sequential(
+                nn.Conv2d(feature_size, feature_size, kernel_size=1, padding=0, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(feature_size, feature_size, kernel_size=1, padding=0, bias=True)
+            )
+        else:
+            raise ValueError
+        # self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.targets = None
+
+        self._initialize_weights(self.agg)
+        self._initialize_weights(self.predictor)
+
+    def forward(self, x):
+        # Extract feautres
+        # x: (batch, num_seq, channel, seq_len)
+        batch_size, num_epoch, channel, time_len = x.shape
+        x = x.view(batch_size * num_epoch, channel, time_len)
+        feature = self.encoder(x)
+        if self.network == 'r1d':
+            feature = F.avg_pool1d(feature, kernel_size=(1,), stride=(1,))
+        else:
+            feature = F.avg_pool2d(feature, kernel_size=(1, 1), stride=(1, 1))
+        last_size = np.prod(feature.shape) // batch_size // num_epoch // self.feature_size
+        assert batch_size * num_epoch * self.feature_size * last_size == np.prod(feature.shape)
+        feature = feature.view(batch_size, num_epoch, self.feature_size, last_size)
+        feature_relu = self.relu(feature)
+        # feature_trans = feature.transpose(0, 2).contiguous()
+
+        # # Get context feature
+        # h_0 = self.gru.init_hidden(batch_size)
+        # # out: (batch, num_seq, hidden_size)
+        # # h_n: (num_layers, batch, hidden_size)
+        # out, h_n = self.gru(feature[:, :-self.pred_steps, :], h_0)
+        #
+        # # Get predictions
+        # pred = []
+        # h_next = h_n
+        # c_next = out[:, -1, :].squeeze(1)
+        # for i in range(self.pred_steps):
+        #     z_pred = self.predictor(c_next)
+        #     pred.append(z_pred)
+        #     c_next, h_next = self.gru(z_pred.unsqueeze(1), h_next)
+        #     c_next = c_next[:, -1, :].squeeze(1)
+        # pred = torch.stack(pred, 1)  # (batch, pred_step, feature_dim)
+        # pred = pred.contiguous()
+
+        ### aggregate, predict future ###
+        _, hidden = self.agg(feature_relu[:, 0:num_epoch - self.pred_steps, :].contiguous())
+        hidden = hidden[:, -1, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
+
+        pred = []
+        for i in range(self.pred_steps):
+            # sequentially pred future
+            p_tmp = self.predictor(hidden)
+            pred.append(p_tmp)
+            _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden.unsqueeze(0))
+            hidden = hidden[:, -1, :]
+        pred = torch.stack(pred, 1)
+
+        # print('1. Feature: ', feature.shape)
+        # print('2. Pred: ', pred.shape)
+
+        # Feature: (batch_size, num_epoch, feature_size, last_size)
+        # Pred: (batch_size, pred_steps, feature_size, last_size)
+
+        # Compute scores
+        # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
+        # logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
+
+        logits = torch.einsum('ijkl,mnkq->ijlqnm', [feature, pred])
+        # print('3. Logits: ', logits.shape)
+        logits = logits.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
+
+        if self.targets is None:
+            targets = torch.zeros(batch_size, num_epoch, last_size, last_size, self.pred_steps, batch_size)
+            for i in range(batch_size):
+                for j in range(last_size):
+                    for k in range(self.pred_steps):
+                        targets[i, num_epoch - self.pred_steps + k, j, j, k, i] = 1
+            targets = targets.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
+            targets = targets.argmax(dim=1)
+            targets = targets.cuda(device=self.device)
+            self.targets = targets
+
+        # if self.targets is None:
+        #     targets = torch.zeros(batch_size, self.pred_steps, num_epoch, batch_size).long()
+        #     for i in range(batch_size):
+        #         for j in range(self.pred_steps):
+        #             targets[i, j, num_epoch - self.pred_steps + j, i] = 1
+        #     targets = targets.view(batch_size * self.pred_steps, num_epoch * batch_size)
+        #     targets = targets.argmax(dim=1)
+        #     self.targets = targets.cuda(self.device)
+
+        return logits, self.targets
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
+
+
+class DPCClassifier(DPC):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
+        super(DPCClassifier, self).__init__(network, input_channels, hidden_channels, feature_dim, pred_steps, device)
+
+        self.network = network
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
+        self.feature_dim = feature_dim
+        self.pred_steps = pred_steps
         self.device = device
 
         if network == 'r1d':
@@ -42,198 +170,5 @@ class DPC(nn.Module):
             self.feature_size = self.encoder.feature_size
         else:
             raise ValueError
-        self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2)
+        self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         self.predictor = MLP(input_dim=feature_dim, output_dim=feature_dim)
-
-    def pretrain(self, data_loader, args):
-        if args.optimizer == 'sgd':
-            optimizer = optim.SGD(itertools.chain(self.encoder.parameters(), self.gru.parameters(),
-                                                  self.predictor.parameters()),
-                                  lr=args.learning_rate,
-                                  weight_decay=args.weight_decay, momentum=args.momentum)
-        elif args.optimizer == 'adam':
-            optimizer = optim.Adam(itertools.chain(self.encoder.parameters(), self.gru.parameters(),
-                                                   self.predictor.parameters()),
-                                   lr=args.learning_rate, betas=(0.9, 0.98),
-                                   eps=1e-09, weight_decay=args.weight_decay, amsgrad=True)
-        else:
-            raise ValueError('Invalid optimizer option!')
-
-        criterion = nn.CrossEntropyLoss()
-
-        self.encoder.train()
-        target = self.__compute_target()
-        for epoch in range(args.pretrain_epochs):
-            losses = []
-
-            for x in data_loader:
-                x = x.to(self.device)
-
-                (batch, num_seq, channel, seq_len) = x.shape
-                x = x.view(batch * num_seq, channel, seq_len)
-
-                z = self.encoder(x)
-                z = z.view(batch, num_seq, self.feature_dim)  # (batch, num_seq, feature_dim)
-                z = z.transpose(0, 2).contiguous()
-
-                # Get context feature
-                h_0 = self.gru.init_hidden(batch, self.device)
-                # out: (batch, num_seq, hidden_size)
-                # h_n: (num_layers, batch, hidden_size)
-                out, h_n = self.gru(z[:, :-self.pred_steps, :], h_0)
-
-                # Get predictions
-                pred = []
-                h_next = h_n
-                c_next = out[:, -1, :].squeeze(1)
-                for i in range(self.pred_steps):
-                    z_pred = self.predictor(c_next)
-                    pred.append(z_pred)
-                    c_next, h_next = self.gru(z_pred.unsqueeze(1), h_next)
-                    c_next = c_next[:, -1, :].squeeze(1)
-                pred = torch.stack(pred, 1)  # (batch, pred_step, feature_dim)
-                pred = pred.contiguous()
-
-                # Compute scores
-                score = torch.einsum('ijk,kmn->ijmn', [pred, z])  # (batch, pred_step, num_seq, batch)
-                score = score.view(batch * self.pred_steps, num_seq * batch)
-
-                loss = criterion(score, target)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-
-            if (epoch + 1) % args.disp_interval == 0:
-                print(f'EPOCH: [{epoch + 1}/{args.epochs}] Loss: {np.mean(losses):.6f}')
-
-    def finetune(self, data_loader, args):
-        if args.optimizer == 'sgd':
-            optimizer = optim.SGD(self.classifier.parameters(), lr=args.learning_rate,
-                                  weight_decay=args.weight_decay, momentum=args.momentum)
-        elif args.optimizer == 'adam':
-            optimizer = optim.Adam(self.classifier.parameters(), lr=args.learning_rate, betas=(0.9, 0.98),
-                                   eps=1e-09, weight_decay=args.weight_decay, amsgrad=True)
-        else:
-            raise ValueError('Invalid optimizer option!')
-
-        criterion = nn.CrossEntropyLoss()
-
-        self.encoder.eval()
-        self.gru.eval()
-        self.predictor.eval()
-        self.classifier.train()
-        self.__freeze_parameters()
-
-        for epoch in range(args.finetune_epochs):
-            losses = []
-
-            for x, y in data_loader:
-                x, y = x.to(self.device), y.to(self.device)
-
-                # x: (batch, num_seq, channel, seq_len)
-                (batch, num_seq, channel, seq_len) = x.shape
-                x = x.view(batch * num_seq, channel, seq_len)
-                z = self.encoder(x)
-                z = z.view(batch, num_seq, self.feature_dim)  # (batch, num_seq, feature_dim)
-
-                # Get context feature
-                h_0 = self.gru.init_hidden(batch, self.device)
-                # context: (batch, num_seq, hidden_size)
-                # h_n:     (num_layers, batch, hidden_size)
-                context, h_n = self.gru(z[:, :-self.pred_steps, :], h_0)
-
-                context = context[:, -1, :]
-                # Use context vector for classification
-                y_hat = self.classifier(context)
-
-                loss = criterion(y_hat, y)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-
-            if (epoch + 1) % args.disp_interval == 0:
-                print(f'EPOCH: [{epoch + 1}/{args.epochs}] Loss: {np.mean(losses):.6f}')
-
-    def evaluate(self, data_loader, args):
-        self.encoder.eval()
-        self.gru.eval()
-        self.predictor.eval()
-        self.classifier.eval()
-        self.__freeze_parameters()
-
-        predictions = []
-        labels = []
-
-        with torch.no_grad():
-            for x, y in data_loader:
-                x, y = x.to(self.device), y.to(self.device)
-
-                # x: (batch, num_seq, channel, seq_len)
-                (batch, num_seq, channel, seq_len) = x.shape
-                x = x.view(batch * num_seq, channel, seq_len)
-                z = self.encoder(x)
-                z = z.view(batch, num_seq, self.feature_dim)  # (batch, num_seq, feature_dim)
-
-                # Get context feature
-                h_0 = self.gru.init_hidden(batch)
-                # context: (batch, num_seq, hidden_size)
-                # h_n:     (num_layers, batch, hidden_size)
-                context, h_n = self.gru(z[:, :-self.pred_steps, :], h_0)
-
-                context = context[:, -1, :]
-                # Use context vector for classification
-                y_hat = self.classifier(context)
-
-                # TODO: test local representations
-                # TODO: representation normalization and temperature
-
-                labels.append(y.numpy()[:, -args.pred_steps - 1])
-                predictions.append(y_hat.cpu().numpy())
-
-        labels = np.concatenate(labels, axis=0)
-        predictions = np.concatenate(predictions, axis=0)
-        predictions = np.argmax(predictions, axis=1)
-
-        return get_performance(predictions, labels)
-
-    def save(self):
-        pass
-
-    def load(self):
-        pass
-
-    def __repr__(self):
-        return self.encoder.__repr__() + '\n' + self.gru.__repr__() + '\n' + self.predictor.__repr__() + \
-               '\n' + self.classifier.__repr__()
-
-    def __compute_score(self, z):
-        scores = torch.einsum('ijk,mnk->ijnm', [z, z])  # (batch, num_seq, num_seq, batch)
-        scores = scores.view(self.batch_size * self.num_seq, self.num_seq * self.batch_size)
-
-        return scores
-
-    def __compute_target(self):
-        targets = torch.zeros(self.batch_size, self.num_seq, self.num_seq, self.batch_size).long()
-        for i, j, k in itertools.product(range(self.batch_size), range(self.num_seq), range(self.num_seq)):
-            targets[i, j, k, i] = 1
-
-        targets = targets.to(self.device)
-        targets = targets.view(self.batch_size * self.num_seq, self.num_seq * self.batch_size)
-        targets = targets.argmax(dim=1)
-
-        return targets
-
-    def __freeze_parameters(self):
-        for p in self.encoder.parameters():
-            p.requires_grad = False
-
-        for p in self.gru.parameters():
-            p.requires_grad = False
-
-        for p in self.predictor.parameters():
-            p.requires_grad = False
