@@ -7,6 +7,7 @@
 @Desc    : 
 """
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
@@ -38,5 +39,8 @@ def get_performance(scores: np.ndarray, labels: np.ndarray):
     cm = confusion_matrix(labels, predictions)
     accuracy_per_class = cm.diagonal() / cm.sum(axis=1)
 
-    return {'accuracy': accuracy, 'accuracy_per_class': accuracy_per_class.tolist(),
-            'f1_micro': f1_micro, 'f1_macro': f1_macro}
+    performance = {'accuracy': [accuracy],
+                   **{f'accuracy_class_{i}': [acc] for i, acc in enumerate(accuracy_per_class.tolist())},
+                   'f1_micro': [f1_micro], 'f1_macro': [f1_macro]}
+
+    return pd.DataFrame(performance).transpose()

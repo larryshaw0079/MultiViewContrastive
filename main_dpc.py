@@ -8,6 +8,7 @@
 """
 import argparse
 import os
+import pickle
 import random
 import shutil
 import warnings
@@ -16,16 +17,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import wandb
 from sklearn.model_selection import KFold
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
 
 from mvc.data import SleepDataset
-from mvc.model import DPC
+from mvc.model import DPC, DPCClassifier
 from mvc.utils import (
     logits_accuracy,
-    adjust_learning_rate
+    adjust_learning_rate,
+    get_performance
 )
 
 
@@ -53,14 +54,14 @@ def parse_args(verbose=True):
     parser.add_argument('--load-path', type=str, default=None)
     parser.add_argument('--channels', type=int, default=2)
     parser.add_argument('--time-len', type=int, default=3000)
-    parser.add_argument('--num-epoch', type=int, default=8, help='The number of epochs in a sequence')
+    parser.add_argument('--num-epoch', type=int, default=10, help='The number of epochs in a sequence')
     parser.add_argument('--classes', type=int, default=5)
     parser.add_argument('--write-embedding', action='store_true')
 
     # Model
     parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
     parser.add_argument('--feature-dim', type=int, default=128)
-    parser.add_argument('--pred-steps', type=int, default=4)
+    parser.add_argument('--pred-steps', type=int, default=5)
 
     # Training
     parser.add_argument('--only-pretrain', action='store_true')
@@ -117,8 +118,15 @@ def pretrain(model, dataset, device, run_id, args):
     data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
                              shuffle=True, pin_memory=True, drop_last=True)
 
+    start_epoch = 0
+    if args.resume:
+        checkpoint = torch.load(args.load_path)
+        model.load_state_dict(checkpoint['state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        print(f'[INFO] Resuming from epoch {start_epoch}...')
+
     model.train()
-    for epoch in range(args.pretrain_epochs):
+    for epoch in range(start_epoch, args.pretrain_epochs):
         losses = []
         accuracies = []
         adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
@@ -140,7 +148,88 @@ def pretrain(model, dataset, device, run_id, args):
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
         if (epoch + 1) % args.save_interval == 0:
-            torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_pretrain_{epoch}.pth.tar'))
+            torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
+                       os.path.join(args.save_path, f'dpc_run_{run_id}_pretrain_{epoch}.pth.tar'))
+
+
+def finetune(classifier, dataset, device, args):
+    params = []
+    if args.finetune_mode == 'freeze':
+        print('[INFO] Finetune classifier only for the last layer...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name or 'agg' in name:
+                param.requires_grad = False
+            else:
+                params.append({'params': param})
+    elif args.finetune_mode == 'smaller':
+        print('[INFO] Finetune the whole classifier where the backbone have a smaller lr...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name or 'agg' in name:
+                params.append({'params': param, 'lr': args.lr / 10})
+            else:
+                params.append({'params': param})
+    else:
+        print('[INFO] Finetune the whole classifier...')
+        for name, param in classifier.named_parameters():
+            params.append({'params': param})
+
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+    else:
+        raise ValueError('Invalid optimizer!')
+
+    criterion = nn.CrossEntropyLoss().cuda(device)
+
+    sampled_indices = np.arange(len(dataset))
+    np.random.shuffle(sampled_indices)
+    sampled_indices = sampled_indices[:int(len(sampled_indices) * args.finetune_ratio)]
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=False, pin_memory=True, drop_last=True,
+                             sampler=SubsetRandomSampler(sampled_indices))
+
+    classifier.train()
+    for epoch in range(args.finetune_epochs):
+        losses = []
+        accuracies = []
+        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.finetune_epochs}]') as progress_bar:
+            for x, y in progress_bar:
+                x, y = x.cuda(device, non_blocking=True), y.cuda(device, non_blocking=True)
+
+                out = classifier(x)
+                loss = criterion(out, y[:, -args.pred_steps - 1])
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                losses.append(loss.item())
+                accuracies.append(logits_accuracy(out, y[:, -args.pred_steps - 1], topk=(1,))[0])
+
+                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+
+
+def evaluate(classifier, dataset, device, args):
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=True, pin_memory=True, drop_last=True)
+
+    targets = []
+    scores = []
+
+    classifier.eval()
+    with torch.no_grad():
+        for x, y in data_loader:
+            x = x.cuda(device, non_blocking=True)
+
+            out = classifier(x)
+            scores.append(out.cpu().numpy())
+            targets.append(y[:, -args.pred_steps - 1].numpy())
+
+    scores = np.concatenate(scores, axis=0)
+    targets = np.concatenate(targets, axis=0)
+
+    return scores, targets
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
@@ -154,14 +243,27 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     pretrain(model, train_dataset, device, run_id, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_pretrained.pth.tar'))
 
+    classifier = DPCClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
+                               feature_dim=args.feature_dim,
+                               pred_steps=args.pred_steps, num_class=args.classes, device=device)
+    classifier.cuda(device)
+
+    classifier.load_state_dict(model.state_dict(), strict=False)
+
+    finetune(classifier, train_dataset, device, args)
+    torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_finetuned.pth.tar'))
+
+    test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients)
+    print(test_dataset)
+    scores, targets = evaluate(classifier, test_dataset, device, args)
+    performance = get_performance(scores, targets)
+    with open(os.path.join(args.save_path, f'performance_{run_id}.pkl'), 'wb') as f:
+        pickle.dump(performance, f)
+    print(performance)
+
 
 if __name__ == '__main__':
     args = parse_args()
-
-    if args.wandb:
-        with open('./data/wandb.txt', 'r') as f:
-            os.environ['WANDB_API_KEY'] = f.readlines()[0]
-        wandb.init(project='MVC', group=f'MOCO_{args.network}', config=args)
 
     if args.seed is not None:
         setup_seed(args.seed)

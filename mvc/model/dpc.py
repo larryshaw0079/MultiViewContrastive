@@ -27,7 +27,8 @@ class DPC(nn.Module):
         self.device = device
 
         if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=3, final_fc=False)
+            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                                  final_fc=False)
             feature_size = self.encoder.feature_size
             self.feature_size = feature_size
             self.agg = ConvGRU1d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
@@ -150,9 +151,9 @@ class DPC(nn.Module):
                 nn.init.orthogonal_(param, 1)
 
 
-class DPCClassifier(DPC):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
-        super(DPCClassifier, self).__init__(network, input_channels, hidden_channels, feature_dim, pred_steps, device)
+class DPCClassifier(nn.Module):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_class, device):
+        super(DPCClassifier, self).__init__()
 
         self.network = network
         self.input_channels = input_channels
@@ -162,13 +163,66 @@ class DPCClassifier(DPC):
         self.device = device
 
         if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=3, final_fc=True)
-            self.feature_size = self.encoder.feature_size
+            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                                  final_fc=False)
+            feature_size = self.encoder.feature_size
+            self.feature_size = feature_size
+            self.agg = ConvGRU1d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
+                                 num_layers=1, device=device)
         elif network == 'r2d':
             self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                  final_fc=True)
-            self.feature_size = self.encoder.feature_size
+                                  final_fc=False)
+            feature_size = self.encoder.feature_size
+            self.feature_size = feature_size
+            self.agg = ConvGRU2d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
+                                 num_layers=1, device=device)
         else:
             raise ValueError
-        self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
-        self.predictor = MLP(input_dim=feature_dim, output_dim=feature_dim)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.final_fc = nn.Sequential(
+            nn.BatchNorm1d(feature_size),
+            nn.Dropout(0.5),
+            nn.Linear(feature_size, num_class)
+        )
+
+        # self._initialize_weights(self.final_fc)
+
+    def forward(self, x):
+        batch_size, num_epoch, channel, time_len = x.shape
+        x = x.view(batch_size * num_epoch, channel, time_len)
+        feature = self.encoder(x)
+        feature = self.relu(feature)
+        if self.network == 'r1d':
+            feature = F.avg_pool1d(feature, kernel_size=(1,), stride=(1,))
+        else:
+            feature = F.avg_pool2d(feature, kernel_size=(1, 1), stride=(1, 1))
+        last_size = np.prod(feature.shape) // batch_size // num_epoch // self.feature_size
+        assert batch_size * num_epoch * self.feature_size * last_size == np.prod(feature.shape)
+        feature = feature.view(batch_size, num_epoch, self.feature_size, last_size)
+
+        context, _ = self.agg(feature)
+        context = context[:, -1, :]
+        # print('1. Context: ', context.shape)
+        context = F.avg_pool1d(context, (last_size,), stride=1).squeeze()
+
+        # print('2. Context: ', context.shape)
+
+        out = self.final_fc(context)
+
+        # print('3. Out: ', out.shape)
+
+        return out
+
+    # def _initialize_weights(self, module):
+    # for m in module.modules():
+    #     if isinstance(m, nn.BatchNorm1d):
+    # for name, param in module.named_parameters():
+    #         param.weight.data.fill_(1)
+    #         param.bias.data.zero_()
+    # else:
+    #     for name, param in m.named_parameters():
+    #         if 'bias' in name:
+    #             nn.init.constant_(param, 0.0)
+    #         elif 'weight' in name:
+    #             nn.init.orthogonal_(param, 1)
