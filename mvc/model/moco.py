@@ -34,7 +34,7 @@ class Moco(nn.Module):
 
         # create the encoders (including non-linear projection head: 2 FC layers)
         if network == 'r1d':
-            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=3, final_fc=False)
+            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=[7, 11, 11, 7], final_fc=False)
             feature_size = backbone.feature_size
             self.encoder_q = nn.Sequential(
                 backbone,
@@ -43,7 +43,7 @@ class Moco(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv1d(feature_size, dim, kernel_size=1, bias=True)
             )
-            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=3, final_fc=False)
+            backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=[7, 11, 11, 7], final_fc=False)
             self.encoder_k = nn.Sequential(
                 backbone,
                 nn.AdaptiveAvgPool1d((1,)),
@@ -176,7 +176,7 @@ class MocoClassifier(nn.Module):
 
         # create the encoders (including non-linear projection head: 2 FC layers)
         if network == 'r1d':
-            self.backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=3, final_fc=False)
+            self.backbone = R1DNet(in_channel, mid_channel, dim, stride=2, kernel_size=[7, 11, 11, 7], final_fc=False)
             self.feature_size = self.backbone.feature_size
         elif network == 'r2d':
             self.backbone = R2DNet(in_channel, mid_channel, dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],

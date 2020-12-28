@@ -60,6 +60,7 @@ def parse_args(verbose=True):
 
     # Model
     parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
+    parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)
 
@@ -109,7 +110,8 @@ def pretrain(model, dataset, device, run_id, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
     else:
         raise ValueError('Invalid optimizer!')
 
@@ -176,7 +178,8 @@ def finetune(classifier, dataset, device, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
     else:
         raise ValueError('Invalid optimizer!')
 
@@ -234,7 +237,7 @@ def evaluate(classifier, dataset, device, args):
 
 def main_worker(run_id, device, train_patients, test_patients, args):
     model = DPC(network=args.network, input_channels=args.channels, hidden_channels=16, feature_dim=args.feature_dim,
-                pred_steps=args.pred_steps, device=device)
+                pred_steps=args.pred_steps, temperature=args.temperature, device=device)
     model.cuda(device)
 
     train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients)
@@ -243,9 +246,21 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     pretrain(model, train_dataset, device, run_id, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_pretrained.pth.tar'))
 
+    # Finetuning
+    if args.finetune_mode == 'freeze':
+        use_dropout = False
+        use_l2_norm = True
+        use_final_bn = True
+    else:
+        use_dropout = True
+        use_l2_norm = False
+        use_final_bn = False
+
     classifier = DPCClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
                                feature_dim=args.feature_dim,
-                               pred_steps=args.pred_steps, num_class=args.classes, device=device)
+                               pred_steps=args.pred_steps, num_class=args.classes,
+                               use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                               device=device)
     classifier.cuda(device)
 
     classifier.load_state_dict(model.state_dict(), strict=False)

@@ -188,7 +188,8 @@ def pretrain(model, dataset, device, run_id, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
     else:
         raise ValueError('Invalid optimizer!')
 
@@ -254,7 +255,8 @@ def finetune(classifier, dataset, device, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
     else:
         raise ValueError('Invalid optimizer!')
 

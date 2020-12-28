@@ -14,7 +14,38 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from ..backbone import ResNet, MLP
+from ..backbone import R1DNet, R2DNet
+
+
+class DCC(nn.Module):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
+        super(DCC, self).__init__()
+
+        self.network = network
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
+        self.feature_dim = feature_dim
+        self.pred_steps = pred_steps
+        self.device = device
+
+        if network == 'r1d':
+            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                                  final_fc=False)
+        elif network == 'r2d':
+            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+                                  final_fc=False)
+        feature_size = self.encoder.feature_size
+        self.feature_size = feature_size
+
+        self.targets = None
+
+    def forward(self, x):
+        batch_size, num_epoch, channel, time_len = x.shape
+        x = x.view(batch_size * num_epoch, channel, time_len)
+        feature = self.encoder(x)
+
+        if self.targets is None:
+            targets = torch.zeros()
 
 
 class DCC(object):

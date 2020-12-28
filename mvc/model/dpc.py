@@ -16,7 +16,7 @@ from ..backbone import R1DNet, R2DNet, ConvGRU1d, ConvGRU2d
 
 
 class DPC(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, temperature, device):
         super(DPC, self).__init__()
 
         self.network = network
@@ -24,6 +24,7 @@ class DPC(nn.Module):
         self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
+        self.temperature = temperature
         self.device = device
 
         if network == 'r1d':
@@ -107,19 +108,26 @@ class DPC(nn.Module):
             hidden = hidden[:, -1, :]
         pred = torch.stack(pred, 1)
 
-        # print('1. Feature: ', feature.shape)
-        # print('2. Pred: ', pred.shape)
-
         # Feature: (batch_size, num_epoch, feature_size, last_size)
         # Pred: (batch_size, pred_steps, feature_size, last_size)
+        feature = feature.permute(0, 1, 3, 2).contiguous()
+        feature = feature.view(batch_size * num_epoch * last_size, self.feature_size)
+        feature = F.normalize(feature, p=2, dim=1)
+        feature = feature.view(batch_size, num_epoch, last_size, self.feature_size)
+
+        pred = pred.permute(0, 1, 3, 2).contiguous()
+        pred = pred.view(batch_size * self.pred_steps * last_size, self.feature_size)
+        pred = F.normalize(pred, p=2, dim=1)
+        pred = pred.view(batch_size, self.pred_steps, last_size, self.feature_size)
 
         # Compute scores
         # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
         # logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
 
-        logits = torch.einsum('ijkl,mnkq->ijlqnm', [feature, pred])
+        logits = torch.einsum('ijkl,mnql->ijkqnm', [feature, pred])
         # print('3. Logits: ', logits.shape)
         logits = logits.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
+        logits /= self.temperature
 
         if self.targets is None:
             targets = torch.zeros(batch_size, num_epoch, last_size, last_size, self.pred_steps, batch_size)
@@ -152,7 +160,8 @@ class DPC(nn.Module):
 
 
 class DPCClassifier(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_class, device):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_class,
+                 use_l2_norm, use_dropout, use_batch_norm, device):
         super(DPCClassifier, self).__init__()
 
         self.network = network
@@ -161,6 +170,9 @@ class DPCClassifier(nn.Module):
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
         self.device = device
+        self.use_l2_norm = use_l2_norm
+        self.use_dropout = use_dropout
+        self.use_batch_norm = use_batch_norm
 
         if network == 'r1d':
             self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
@@ -180,11 +192,15 @@ class DPCClassifier(nn.Module):
             raise ValueError
 
         self.relu = nn.ReLU(inplace=True)
-        self.final_fc = nn.Sequential(
-            nn.BatchNorm1d(feature_size),
-            nn.Dropout(0.5),
-            nn.Linear(feature_size, num_class)
-        )
+
+        final_fc = []
+
+        if use_batch_norm:
+            final_fc.append(nn.BatchNorm1d(self.feature_size))
+        if use_dropout:
+            final_fc.append(nn.Dropout(0.5))
+        final_fc.append(nn.Linear(feature_size, num_class))
+        self.final_fc = nn.Sequential(*final_fc)
 
         # self._initialize_weights(self.final_fc)
 
@@ -207,6 +223,9 @@ class DPCClassifier(nn.Module):
         context = F.avg_pool1d(context, (last_size,), stride=1).squeeze()
 
         # print('2. Context: ', context.shape)
+
+        if self.use_l2_norm:
+            context = F.normalize(context, p=2, dim=1)
 
         out = self.final_fc(context)
 
