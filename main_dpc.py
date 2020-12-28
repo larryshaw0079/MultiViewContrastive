@@ -57,6 +57,7 @@ def parse_args(verbose=True):
     parser.add_argument('--num-epoch', type=int, default=10, help='The number of epochs in a sequence')
     parser.add_argument('--classes', type=int, default=5)
     parser.add_argument('--write-embedding', action='store_true')
+    parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='none')
 
     # Model
     parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
@@ -76,7 +77,8 @@ def parse_args(verbose=True):
     parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
     parser.add_argument('--lr-schedule', type=int, nargs='*', default=[120, 160])
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--num-workers', type=int, default=4)
+    parser.add_argument('--num-workers', type=int, default=0)
+    parser.add_argument('--use-temperature', action='store_true')
 
     # Optimization
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'])
@@ -237,10 +239,12 @@ def evaluate(classifier, dataset, device, args):
 
 def main_worker(run_id, device, train_patients, test_patients, args):
     model = DPC(network=args.network, input_channels=args.channels, hidden_channels=16, feature_dim=args.feature_dim,
-                pred_steps=args.pred_steps, temperature=args.temperature, device=device)
+                pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
+                device=device)
     model.cuda(device)
 
-    train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients)
+    train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients,
+                                 preprocessing=args.preprocessing)
     print(train_dataset)
 
     pretrain(model, train_dataset, device, run_id, args)
@@ -249,7 +253,10 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     # Finetuning
     if args.finetune_mode == 'freeze':
         use_dropout = False
-        use_l2_norm = True
+        if args.use_temperature:
+            use_l2_norm = True
+        else:
+            use_l2_norm = False
         use_final_bn = True
     else:
         use_dropout = True
@@ -268,12 +275,13 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     finetune(classifier, train_dataset, device, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_finetuned.pth.tar'))
 
-    test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients)
+    test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
+                                preprocessing=args.preprocessing)
     print(test_dataset)
     scores, targets = evaluate(classifier, test_dataset, device, args)
     performance = get_performance(scores, targets)
-    with open(os.path.join(args.save_path, f'performance_{run_id}.pkl'), 'wb') as f:
-        pickle.dump(performance, f)
+    with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
+        pickle.dump({'performance': performance, 'args': vars(args)}, f)
     print(performance)
 
 

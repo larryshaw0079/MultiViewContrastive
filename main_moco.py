@@ -454,8 +454,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
             'accuracy_per_class': performance['accuracy_per_class']
         })
 
-    with open(os.path.join(args.save_path, f'performance_{run_id}.pkl'), 'wb') as f:
-        pickle.dump(performance, f)
+    with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
+        pickle.dump({'performance': performance, 'args': vars(args)}, f)
     print(performance)
 
 

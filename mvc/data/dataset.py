@@ -13,6 +13,7 @@ from typing import List, Union, Tuple
 import lmdb
 import numpy as np
 import torch
+from sklearn.preprocessing import StandardScaler, QuantileTransformer
 from torch.utils.data import Dataset, Sampler
 
 from .transformation import Transformation
@@ -45,12 +46,16 @@ class LmdbDataset(Dataset):
 
 
 class SleepDataset(Dataset):
-    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, verbose=True):
+    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, preprocessing: str = 'none',
+                 verbose=True):
         assert isinstance(patietns, list)
 
         self.data_path = data_path
         self.data_name = data_name
         self.patients = patietns
+        self.preprocessing = preprocessing
+
+        assert preprocessing in ['none', 'quantile', 'standard']
 
         self.data = []
         self.labels = []
@@ -62,6 +67,26 @@ class SleepDataset(Dataset):
             if data_name == 'sleepedf':
                 recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)
                 annotations = data['annotation']
+
+                if preprocessing == 'standard':
+                    print(f'[INFO] Applying standard scaler...')
+                    scaler = StandardScaler()
+                    recordings_old = recordings
+                    recordings = []
+                    for j in range(recordings_old.shape[0]):
+                        recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                    recordings = np.stack(recordings, axis=0)
+                elif preprocessing == 'quantile':
+                    print(f'[INFO] Applying quantile scaler...')
+                    scaler = QuantileTransformer(output_distribution='normal')
+                    recordings_old = recordings
+                    recordings = []
+                    for j in range(recordings_old.shape[0]):
+                        recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                    recordings = np.stack(recordings, axis=0)
+                else:
+                    print(f'[INFO] Convert the unit from V to uV...')
+                    recordings *= 1e6
 
                 if verbose:
                     print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
@@ -96,11 +121,12 @@ class SleepDataset(Dataset):
         return """
 **********************************************************************
 Dataset Summary:
+Preprocessing: {}
 # Instance: {}
 Shape of an Instance: {}
 Selected patients: {}
 **********************************************************************
-            """.format(len(self.data), self.full_shape, self.patients)
+            """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
 
 
 class LmdbDatasetWithEdges(Dataset):

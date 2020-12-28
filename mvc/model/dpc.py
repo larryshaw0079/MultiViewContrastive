@@ -16,7 +16,8 @@ from ..backbone import R1DNet, R2DNet, ConvGRU1d, ConvGRU2d
 
 
 class DPC(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, temperature, device):
+    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, use_temperature, temperature,
+                 device):
         super(DPC, self).__init__()
 
         self.network = network
@@ -24,6 +25,7 @@ class DPC(nn.Module):
         self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
+        self.use_temperature = use_temperature
         self.temperature = temperature
         self.device = device
 
@@ -111,14 +113,16 @@ class DPC(nn.Module):
         # Feature: (batch_size, num_epoch, feature_size, last_size)
         # Pred: (batch_size, pred_steps, feature_size, last_size)
         feature = feature.permute(0, 1, 3, 2).contiguous()
-        feature = feature.view(batch_size * num_epoch * last_size, self.feature_size)
-        feature = F.normalize(feature, p=2, dim=1)
-        feature = feature.view(batch_size, num_epoch, last_size, self.feature_size)
+        if self.use_temperature:
+            feature = feature.view(batch_size * num_epoch * last_size, self.feature_size)
+            feature = F.normalize(feature, p=2, dim=1)
+            feature = feature.view(batch_size, num_epoch, last_size, self.feature_size)
 
         pred = pred.permute(0, 1, 3, 2).contiguous()
-        pred = pred.view(batch_size * self.pred_steps * last_size, self.feature_size)
-        pred = F.normalize(pred, p=2, dim=1)
-        pred = pred.view(batch_size, self.pred_steps, last_size, self.feature_size)
+        if self.use_temperature:
+            pred = pred.view(batch_size * self.pred_steps * last_size, self.feature_size)
+            pred = F.normalize(pred, p=2, dim=1)
+            pred = pred.view(batch_size, self.pred_steps, last_size, self.feature_size)
 
         # Compute scores
         # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
@@ -127,7 +131,8 @@ class DPC(nn.Module):
         logits = torch.einsum('ijkl,mnql->ijkqnm', [feature, pred])
         # print('3. Logits: ', logits.shape)
         logits = logits.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
-        logits /= self.temperature
+        if self.use_temperature:
+            logits /= self.temperature
 
         if self.targets is None:
             targets = torch.zeros(batch_size, num_epoch, last_size, last_size, self.pred_steps, batch_size)
