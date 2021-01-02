@@ -67,39 +67,43 @@ class SleepDataset(Dataset):
             if data_name == 'sleepedf':
                 recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)
                 annotations = data['annotation']
-
-                if preprocessing == 'standard':
-                    print(f'[INFO] Applying standard scaler...')
-                    scaler = StandardScaler()
-                    recordings_old = recordings
-                    recordings = []
-                    for j in range(recordings_old.shape[0]):
-                        recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
-                    recordings = np.stack(recordings, axis=0)
-                elif preprocessing == 'quantile':
-                    print(f'[INFO] Applying quantile scaler...')
-                    scaler = QuantileTransformer(output_distribution='normal')
-                    recordings_old = recordings
-                    recordings = []
-                    for j in range(recordings_old.shape[0]):
-                        recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
-                    recordings = np.stack(recordings, axis=0)
-                else:
-                    print(f'[INFO] Convert the unit from V to uV...')
-                    recordings *= 1e6
-
-                if verbose:
-                    print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
-                recordings = recordings[:(recordings.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch,
-                                                                                                 *recordings.shape[1:])
-                annotations = annotations[:(annotations.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch)
-
-                assert recordings.shape[:2] == annotations.shape[:2]
-
-                self.data.append(recordings)
-                self.labels.append(annotations)
+            elif data_name == 'isruc':
+                recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
+                                       data['O1_A2'], data['O2_A1']], axis=1)
+                annotations = data['label'].flatten()
             else:
                 raise ValueError
+
+            if preprocessing == 'standard':
+                print(f'[INFO] Applying standard scaler...')
+                scaler = StandardScaler()
+                recordings_old = recordings
+                recordings = []
+                for j in range(recordings_old.shape[0]):
+                    recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                recordings = np.stack(recordings, axis=0)
+            elif preprocessing == 'quantile':
+                print(f'[INFO] Applying quantile scaler...')
+                scaler = QuantileTransformer(output_distribution='normal')
+                recordings_old = recordings
+                recordings = []
+                for j in range(recordings_old.shape[0]):
+                    recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                recordings = np.stack(recordings, axis=0)
+            else:
+                print(f'[INFO] Convert the unit from V to uV...')
+                recordings *= 1e6
+
+            if verbose:
+                print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
+            recordings = recordings[:(recordings.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch,
+                                                                                             *recordings.shape[1:])
+            annotations = annotations[:(annotations.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch)
+
+            assert recordings.shape[:2] == annotations.shape[:2]
+
+            self.data.append(recordings)
+            self.labels.append(annotations)
 
         self.data = np.concatenate(self.data)
         self.labels = np.concatenate(self.labels)
@@ -127,6 +131,76 @@ Shape of an Instance: {}
 Selected patients: {}
 **********************************************************************
             """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
+
+
+class SleepDataset2d(Dataset):
+    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, preprocessing: str = 'none',
+                 verbose=True):
+        assert isinstance(patietns, list)
+
+        self.data_path = data_path
+        self.data_name = data_name
+        self.patients = patietns
+        self.preprocessing = preprocessing
+
+        assert preprocessing in ['none', 'quantile', 'standard']
+
+        self.data = []
+        self.labels = []
+
+        for i, patient in enumerate(patietns):
+            if verbose:
+                print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
+            data = np.load(os.path.join(data_path, patient))
+            if data_name == 'sleepedf':
+                recordings = data['data']
+                annotations = data['annotation']
+            elif data_name == 'isruc':
+                recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
+                                       data['O1_A2'], data['O2_A1']], axis=1)
+                annotations = data['label'].flatten()
+            else:
+                raise ValueError
+
+            assert preprocessing == 'none'
+
+            if verbose:
+                print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
+            recordings = recordings[:(recordings.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch,
+                                                                                             *recordings.shape[1:])
+            annotations = annotations[:(annotations.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch)
+
+            assert recordings.shape[:2] == annotations.shape[:2]
+
+            self.data.append(recordings)
+            self.labels.append(annotations)
+
+        self.data = np.concatenate(self.data)
+        self.labels = np.concatenate(self.labels)
+        self.full_shape = self.data[0].shape
+
+    def __getitem__(self, item):
+        x = self.data[item]
+        y = self.labels[item]
+
+        x = torch.from_numpy(x.astype(np.float32))
+        y = torch.from_numpy(y.astype(np.long))
+
+        return x, y
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        return """
+    **********************************************************************
+    Dataset Summary:
+    Preprocessing: {}
+    # Instance: {}
+    Shape of an Instance: {}
+    Selected patients: {}
+    **********************************************************************
+                """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
 
 
 class LmdbDatasetWithEdges(Dataset):

@@ -23,20 +23,26 @@ class GRU(nn.Module):
         self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
                           batch_first=True, dropout=dropout)
 
-    def forward(self, x, h_0):
+    def forward(self, x, h_0=None):
         # x:   (batch, seq_len,    input_size)
         # h_0: (num_layers, batch, hidden_size)
+
+        batch_size, num_epoch, *_ = x.shape
+
+        if h_0 is None:
+            h_0 = torch.randn(self.num_layers, batch_size, self.hidden_size)
+            h_0 = h_0.cuda(self.device)
 
         out, h_n = self.gru(x, h_0)
 
         # out: (batch, seq_len, hidden_size)
         # h_n: (num_layers, batch, hidden_size)
         return out, h_n
-
-    def init_hidden(self, batch_size):
-        hidden_states = torch.randn(self.num_layers, batch_size, self.hidden_size)
-        hidden_states = hidden_states.cuda(self.device)
-        return hidden_states
+    #
+    # def init_hidden(self, batch_size):
+    #     hidden_states = torch.randn(self.num_layers, batch_size, self.hidden_size)
+    #     hidden_states = hidden_states.cuda(self.device)
+    #     return hidden_states
 
 
 class ConvGRUCell1d(nn.Module):

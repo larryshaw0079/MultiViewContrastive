@@ -92,7 +92,7 @@ def parse_args(verbose=True):
     # Training
     parser.add_argument('--only-pretrain', action='store_true')
     parser.add_argument('--devices', type=int, nargs='+', default=None)
-    parser.add_argument('--fold', type=int, default=0)
+    parser.add_argument('--fold', type=int, required=True)
     parser.add_argument('--kfold', type=int, default=10)
     parser.add_argument('--pretrain-epochs', type=int, default=200)
     parser.add_argument('--finetune-epochs', type=int, default=10)
@@ -469,6 +469,8 @@ if __name__ == '__main__':
 
     if args.seed is not None:
         setup_seed(args.seed)
+    else:
+        torch.backends.cudnn.deterministic = True  # makes conv1d faster
 
     devices = args.devices
     if devices is None:
@@ -487,6 +489,8 @@ if __name__ == '__main__':
     with open(args.meta_file, 'rb') as f:
         meta_info = pickle.load(f)
         patients = np.unique(meta_info['patient'])
+
+    patients = sorted(patients)
 
     assert args.kfold <= len(patients)
     assert args.fold < args.kfold

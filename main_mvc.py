@@ -1,8 +1,8 @@
 """
-@Time    : 2020/12/15 22:56
+@Time    : 2020/12/29 16:48
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : main_dpc.py
+@File    : main_mvc.py
 @Software: PyCharm
 @Desc    : 
 """
@@ -21,8 +21,8 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
 
-from mvc.data import SleepDataset
-from mvc.model import DPC, DPCClassifier
+from mvc.data import SleepDataset, SleepDataset2d
+from mvc.model import SleepDPC, SleepMVCClassifier
 from mvc.utils import (
     logits_accuracy,
     adjust_learning_rate,
@@ -54,6 +54,7 @@ def parse_args(verbose=True):
     parser.add_argument('--load-path', type=str, default=None)
     parser.add_argument('--channels', type=int, default=2)
     parser.add_argument('--time-len', type=int, default=3000)
+    parser.add_argument('--freq-len', type=int, default=100)
     parser.add_argument('--num-epoch', type=int, default=10, help='The number of epochs in a sequence')
     parser.add_argument('--classes', type=int, default=5)
     parser.add_argument('--write-embedding', action='store_true')
@@ -64,6 +65,8 @@ def parse_args(verbose=True):
     parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)
+    parser.add_argument('--use-memory-pool', action='store_true')
+    parser.add_argument('--memory-pool-size', type=int, default=None)
 
     # Training
     parser.add_argument('--only-pretrain', action='store_true')
@@ -238,17 +241,28 @@ def evaluate(classifier, dataset, device, args):
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
-    model = DPC(network=args.network, input_channels=args.channels, hidden_channels=16, feature_dim=args.feature_dim,
-                pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
-                device=device)
+    model = SleepDPC(network=args.network, input_channels=args.channels, hidden_channels=16,
+                     feature_dim=args.feature_dim,
+                     pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
+                     use_memory_pool=args.use_memory_pool, memory_pool_size=args.memory_pool_size,
+                     device=device)
     model.cuda(device)
 
-    train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients,
-                                 preprocessing=args.preprocessing)
+    if args.network == 'r1d':
+        train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients,
+                                     preprocessing=args.preprocessing)
+    else:
+        train_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, train_patients,
+                                       preprocessing=args.preprocessing)
     print(train_dataset)
 
-    pretrain(model, train_dataset, device, run_id, args)
-    torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_pretrained.pth.tar'))
+    if args.resume:
+        assert args.load_path is not None
+        print(f'[INFO] Loading checkpoints from {args.load_path}...')
+        model.load_state_dict(torch.load(args.load_path))
+    else:
+        pretrain(model, train_dataset, device, run_id, args)
+        torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_pretrained.pth.tar'))
 
     # Finetuning
     if args.finetune_mode == 'freeze':
@@ -263,11 +277,11 @@ def main_worker(run_id, device, train_patients, test_patients, args):
         use_l2_norm = False
         use_final_bn = False
 
-    classifier = DPCClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
-                               feature_dim=args.feature_dim,
-                               pred_steps=args.pred_steps, num_class=args.classes,
-                               use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                               device=device)
+    classifier = SleepMVCClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
+                                    feature_dim=args.feature_dim,
+                                    pred_steps=args.pred_steps, num_class=args.classes,
+                                    use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                    device=device)
     classifier.cuda(device)
 
     classifier.load_state_dict(model.state_dict(), strict=False)
@@ -275,8 +289,13 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     finetune(classifier, train_dataset, device, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_finetuned.pth.tar'))
 
-    test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
-                                preprocessing=args.preprocessing)
+    if args.network == 'r1d':
+        test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
+                                    preprocessing=args.preprocessing)
+    else:
+        test_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, test_patients,
+                                      preprocessing=args.preprocessing)
+
     print(test_dataset)
     scores, targets = evaluate(classifier, test_dataset, device, args)
     performance = get_performance(scores, targets)
@@ -310,7 +329,7 @@ if __name__ == '__main__':
     for a_file in files:
         if a_file.endswith('.npz'):
             patients.append(a_file)
-    # patients = np.asarray(patients).tolist()
+    # patients = np.asarray(patients)
 
     patients = sorted(patients)
     patients = np.asarray(patients)

@@ -1,1 +1,2 @@
-from .dataset import LmdbDataset, LmdbDatasetWithEdges, TwoDataset, ShuffleSampler, SleepDataset
+from .dataset import LmdbDataset, LmdbDatasetWithEdges, TwoDataset, ShuffleSampler
+from .dataset import SleepDataset, SleepDataset2d
