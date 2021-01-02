@@ -2,7 +2,7 @@
 @Time    : 2020/12/29 16:48
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : main_mvc.py
+@File    : main_dpcm.py
 @Software: PyCharm
 @Desc    : 
 """
@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
 
 from mvc.data import SleepDataset, SleepDataset2d
-from mvc.model import SleepDPC, SleepMVCClassifier
+from mvc.model import DPCMem, DPCMemClassifier
 from mvc.utils import (
     logits_accuracy,
     adjust_learning_rate,
@@ -241,11 +241,11 @@ def evaluate(classifier, dataset, device, args):
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
-    model = SleepDPC(network=args.network, input_channels=args.channels, hidden_channels=16,
-                     feature_dim=args.feature_dim,
-                     pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
-                     use_memory_pool=args.use_memory_pool, memory_pool_size=args.memory_pool_size,
-                     device=device)
+    model = DPCMem(network=args.network, input_channels=args.channels, hidden_channels=16,
+                   feature_dim=args.feature_dim,
+                   pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
+                   use_memory_pool=args.use_memory_pool, memory_pool_size=args.memory_pool_size,
+                   device=device)
     model.cuda(device)
 
     if args.network == 'r1d':
@@ -277,11 +277,11 @@ def main_worker(run_id, device, train_patients, test_patients, args):
         use_l2_norm = False
         use_final_bn = False
 
-    classifier = SleepMVCClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
-                                    feature_dim=args.feature_dim,
-                                    pred_steps=args.pred_steps, num_class=args.classes,
-                                    use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                    device=device)
+    classifier = DPCMemClassifier(network=args.network, input_channels=args.channels, hidden_channels=16,
+                                  feature_dim=args.feature_dim,
+                                  pred_steps=args.pred_steps, num_class=args.classes,
+                                  use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                  device=device)
     classifier.cuda(device)
 
     classifier.load_state_dict(model.state_dict(), strict=False)

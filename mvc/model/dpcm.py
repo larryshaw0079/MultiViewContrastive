@@ -2,7 +2,7 @@
 @Time    : 2020/12/29 16:48
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : sleep_mvc.py
+@File    : dpcm.py
 @Software: PyCharm
 @Desc    : 
 """
@@ -13,10 +13,10 @@ import torch.nn.functional as F
 from ..backbone import R1DNet, R2DNet, GRU
 
 
-class SleepDPC(nn.Module):
+class DPCMem(nn.Module):
     def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, use_temperature, temperature,
                  use_memory_pool=False, memory_pool_size=None, device='cuda'):
-        super(SleepDPC, self).__init__()
+        super(DPCMem, self).__init__()
 
         self.network = network
         self.input_channels = input_channels
@@ -183,18 +183,10 @@ class SleepDPC(nn.Module):
                 nn.init.orthogonal_(param, 1)
 
 
-class SleepMVC(nn.Module):
-    def __init__(self):
-        super(SleepMVC, self).__init__()
-
-    def forward(self):
-        pass
-
-
-class SleepMVCClassifier(nn.Module):
+class DPCMemClassifier(nn.Module):
     def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_class,
                  use_l2_norm, use_dropout, use_batch_norm, device):
-        super(SleepMVCClassifier, self).__init__()
+        super(DPCMemClassifier, self).__init__()
 
         self.network = network
         self.input_channels = input_channels
