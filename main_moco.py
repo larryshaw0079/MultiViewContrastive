@@ -491,6 +491,7 @@ if __name__ == '__main__':
         patients = np.unique(meta_info['patient'])
 
     patients = sorted(patients)
+    patients = np.array(patients)
 
     assert args.kfold <= len(patients)
     assert args.fold < args.kfold

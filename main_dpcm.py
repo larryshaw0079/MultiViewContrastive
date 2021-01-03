@@ -61,7 +61,7 @@ def parse_args(verbose=True):
     parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='standard')
 
     # Model
-    parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
+    parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d', 'r2d_img'])
     parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)

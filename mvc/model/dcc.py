@@ -6,175 +6,110 @@
 @Software: PyCharm
 @Desc    : 
 """
-
-import itertools
-
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 
-from ..backbone import R1DNet, R2DNet
+from ..backbone import R1DNet
 
 
 class DCC(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, device):
+    def __init__(self, input_channels, hidden_channels, feature_dim, use_temperature, temperature,
+                 device):
         super(DCC, self).__init__()
 
-        self.network = network
         self.input_channels = input_channels
         self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
-        self.pred_steps = pred_steps
+        self.use_temperature = use_temperature
+        self.temperature = temperature
         self.device = device
-
-        if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
-                                  final_fc=False)
-        elif network == 'r2d':
-            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                  final_fc=False)
-        feature_size = self.encoder.feature_size
-        self.feature_size = feature_size
+        self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                              final_fc=True)
 
         self.targets = None
+
+    def forward(self, x):
+        # Extract feautres
+        # x: (batch, num_seq, channel, seq_len)
+        batch_size, num_epoch, channel, time_len = x.shape
+        x = x.view(batch_size * num_epoch, channel, time_len)
+        feature = self.encoder(x)
+        feature = feature.view(batch_size, num_epoch, self.feature_dim)
+        if self.use_temperature:
+            feature = feature.view(batch_size * num_epoch, self.feature_dim)
+            feature = F.normalize(feature, p=2, dim=1)
+            feature = feature.view(batch_size, num_epoch, self.feature_dim)
+
+        # Compute scores
+        # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
+        # logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
+
+        logits = torch.einsum('ijk,mnk->ijnm', [feature, feature])
+        # print('3. Logits: ', logits.shape)
+        logits = logits.view(batch_size * num_epoch, num_epoch * batch_size)
+        if self.use_temperature:
+            logits /= self.temperature
+
+        if self.targets is None:
+            targets = torch.zeros(batch_size, num_epoch, num_epoch, batch_size)
+            for i in range(batch_size):
+                for j in range(num_epoch):
+                    targets[i, j, :, i] = 1
+            targets = targets.view(batch_size * num_epoch, num_epoch * batch_size)
+            targets = targets.argmax(dim=1)
+            targets = targets.cuda(device=self.device)
+            self.targets = targets
+
+        return logits, self.targets
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
+
+
+class DCCClassifier(nn.Module):
+    def __init__(self, input_channels, hidden_channels, feature_dim, num_class,
+                 use_l2_norm, use_dropout, use_batch_norm, device):
+        super(DCCClassifier, self).__init__()
+
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
+        self.feature_dim = feature_dim
+        self.device = device
+        self.use_l2_norm = use_l2_norm
+        self.use_dropout = use_dropout
+        self.use_batch_norm = use_batch_norm
+
+        self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                              final_fc=True)
+
+        final_fc = []
+
+        if use_batch_norm:
+            final_fc.append(nn.BatchNorm1d(feature_dim))
+        if use_dropout:
+            final_fc.append(nn.Dropout(0.5))
+        final_fc.append(nn.Linear(feature_dim, num_class))
+        self.final_fc = nn.Sequential(*final_fc)
+
+        # self._initialize_weights(self.final_fc)
 
     def forward(self, x):
         batch_size, num_epoch, channel, time_len = x.shape
         x = x.view(batch_size * num_epoch, channel, time_len)
         feature = self.encoder(x)
+        # feature = feature.view(batch_size, num_epoch, self.feature_dim)
 
-        if self.targets is None:
-            targets = torch.zeros()
+        if self.use_l2_norm:
+            feature = F.normalize(feature, p=2, dim=1)
 
+        out = self.final_fc(feature)
+        out = out.view(batch_size, num_epoch, -1)
 
-class DCC(object):
-    def __init__(self, num_seq, input_channel, input_length, feature_dim, batch_size, device, args):
-        self.num_seq = num_seq
-        self.input_channel = input_channel
-        self.input_length = input_length
-        self.feature_dim = feature_dim
-        self.batch_size = batch_size
-        self.device = device
+        # print('3. Out: ', out.shape)
 
-        self.encoder = ResNet()
-        self.classifier = MLP()
-
-        self.encoder = self.encoder.to(device)
-        self.classifier = self.classifier.to(device)
-
-    def pretrain(self, data_loader, args):
-        if args.optimizer == 'sgd':
-            optimizer = optim.SGD(self.encoder.parameters(), lr=args.learning_rate,
-                                  weight_decay=args.weight_decay, momentum=args.momentum)
-        elif args.optimizer == 'adam':
-            optimizer = optim.Adam(self.encoder.parameters(), lr=args.learning_rate, betas=(0.9, 0.98),
-                                   eps=1e-09, weight_decay=args.weight_decay, amsgrad=True)
-        else:
-            raise ValueError('Invalid optimizer option!')
-
-        criterion = nn.CrossEntropyLoss()
-
-        self.encoder.train()
-        target = self.__compute_target()
-        for epoch in range(args.pretrain_epochs):
-            losses = []
-
-            for x in data_loader:
-                x = x.to(self.device)
-                x = x.view(self.batch_size * self.num_seq, -1)
-
-                z = self.encoder(x)
-                z = z.view(self.batch_size, self.num_seq, -1)
-                score = self.__compute_score(z)
-                loss = criterion(score, target)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-
-            if (epoch + 1) % args.disp_interval == 0:
-                print(f'EPOCH: [{epoch + 1}/{args.epochs}] Loss: {np.mean(losses):.6f}')
-
-    def finetune(self, data_loader, args):
-        if args.optimizer == 'sgd':
-            optimizer = optim.SGD(self.classifier.parameters(), lr=args.learning_rate,
-                                  weight_decay=args.weight_decay, momentum=args.momentum)
-        elif args.optimizer == 'adam':
-            optimizer = optim.Adam(self.classifier.parameters(), lr=args.learning_rate, betas=(0.9, 0.98),
-                                   eps=1e-09, weight_decay=args.weight_decay, amsgrad=True)
-        else:
-            raise ValueError('Invalid optimizer option!')
-
-        criterion = nn.CrossEntropyLoss()
-
-        self.encoder.eval()
-        self.classifier.train()
-        self.__freeze_parameters()
-
-        for epoch in range(args.finetune_epochs):
-            losses = []
-
-            for x, y in data_loader:
-                x, y = x.to(self.device), y.to(self.device)
-                x = x.view(self.batch_size * self.num_seq, -1)
-                y = y.view(self.batch_size * self.num_seq)
-
-                z = self.encoder(x)
-                y_hat = self.classifier(z)
-                loss = criterion(y_hat, y)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-
-            if (epoch + 1) % args.disp_interval == 0:
-                print(f'EPOCH: [{epoch + 1}/{args.epochs}] Loss: {np.mean(losses):.6f}')
-
-    def evaluate(self, data_loader, args):
-        self.encoder.eval()
-        self.classifier.eval()
-        self.__freeze_parameters()
-
-        with torch.no_grad():
-            for x, y in data_loader:
-                x, y = x.to(self.device), y.to(self.device)
-                x = x.view(self.batch_size * self.num_seq, -1)
-                y = y.view(self.batch_size * self.num_seq)
-
-                z = self.encoder(x)
-                y_hat = self.classifier(z)
-
-    def save(self):
-        pass
-
-    def load(self):
-        pass
-
-    def __repr__(self):
-        return self.encoder.__repr__() + '\n' + self.classifier.__repr__()
-
-    def __compute_score(self, z):
-        scores = torch.einsum('ijk,mnk->ijnm', [z, z])  # (batch, num_seq, num_seq, batch)
-        scores = scores.view(self.batch_size * self.num_seq, self.num_seq * self.batch_size)
-
-        return scores
-
-    def __compute_target(self):
-        targets = torch.zeros(self.batch_size, self.num_seq, self.num_seq, self.batch_size).long()
-        for i, j, k in itertools.product(range(self.batch_size), range(self.num_seq), range(self.num_seq)):
-            targets[i, j, k, i] = 1
-
-        targets = targets.to(self.device)
-        targets = targets.view(self.batch_size * self.num_seq, self.num_seq * self.batch_size)
-        targets = targets.argmax(dim=1)
-
-        return targets
-
-    def __freeze_parameters(self):
-        for p in self.encoder.parameters():
-            p.requires_grad = False
+        return out

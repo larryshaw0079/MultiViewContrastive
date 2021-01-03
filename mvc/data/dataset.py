@@ -13,6 +13,7 @@ from typing import List, Union, Tuple
 import lmdb
 import numpy as np
 import torch
+from PIL import Image
 from sklearn.preprocessing import StandardScaler, QuantileTransformer
 from torch.utils.data import Dataset, Sampler
 
@@ -201,6 +202,34 @@ class SleepDataset2d(Dataset):
     Selected patients: {}
     **********************************************************************
                 """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
+
+
+class SleepDatasetImg(Dataset):
+    def __init__(self, data_path, data_name, num_epoch, channels: List[str], transform=None, patients: List = None):
+        self.data_path = data_path
+        self.data_name = data_name
+        self.num_epoch = num_epoch
+        self.transform = transform
+        self.channels = channels
+        self.patients = patients
+
+        self.num_instance_per_patient = []
+        for patient in patients:
+            num_instance_old = None
+            for channel in channels:
+                files = os.listdir(os.path.join(data_path, channel, patient))
+                num_instance_new = len(files)
+                assert num_instance_old or num_instance_new == num_instance_old
+                num_instance_old = num_instance_new
+            self.num_instance_per_patient.append(num_instance_old // num_epoch * num_epoch)
+
+    def __getitem__(self, item):
+        images = []
+        for channel in self.channels:
+            img = Image.open(os.path.join())
+
+    def __len__(self):
+        return np.sum(self.num_instance_per_patient)
 
 
 class LmdbDatasetWithEdges(Dataset):
