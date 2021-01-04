@@ -9,9 +9,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 
-from ..backbone import R1DNet, R2DNet, GRU
+from ..backbone import R1DNet, R2DNet, GRU, ResNet
 
 
 class DPCMem(nn.Module):
@@ -56,7 +55,7 @@ class DPCMem(nn.Module):
                 nn.Linear(feature_dim, feature_dim)
             )
         elif network == 'r2d_img':
-            self.encoder = torchvision.models.resnet18(num_classes=feature_dim)
+            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
             self.predictor = nn.Sequential(
                 nn.Linear(feature_dim, feature_dim),
@@ -218,6 +217,9 @@ class DPCMemClassifier(nn.Module):
                                   final_fc=True)
             feature_size = self.encoder.feature_size
             self.feature_size = feature_size
+            self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
+        elif network == 'r2d_img':
+            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         else:
             raise ValueError

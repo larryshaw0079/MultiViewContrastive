@@ -47,13 +47,13 @@ class LmdbDataset(Dataset):
 
 
 class SleepDataset(Dataset):
-    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, preprocessing: str = 'none',
+    def __init__(self, data_path, data_name, num_epoch, patients: List = None, preprocessing: str = 'none',
                  verbose=True):
-        assert isinstance(patietns, list)
+        assert isinstance(patients, list)
 
         self.data_path = data_path
         self.data_name = data_name
-        self.patients = patietns
+        self.patients = patients
         self.preprocessing = preprocessing
 
         assert preprocessing in ['none', 'quantile', 'standard']
@@ -61,7 +61,7 @@ class SleepDataset(Dataset):
         self.data = []
         self.labels = []
 
-        for i, patient in enumerate(patietns):
+        for i, patient in enumerate(patients):
             if verbose:
                 print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
             data = np.load(os.path.join(data_path, patient))
@@ -135,13 +135,13 @@ Selected patients: {}
 
 
 class SleepDataset2d(Dataset):
-    def __init__(self, data_path, data_name, num_epoch, patietns: List = None, preprocessing: str = 'none',
+    def __init__(self, data_path, data_name, num_epoch, patients: List = None, preprocessing: str = 'none',
                  verbose=True):
-        assert isinstance(patietns, list)
+        assert isinstance(patients, list)
 
         self.data_path = data_path
         self.data_name = data_name
-        self.patients = patietns
+        self.patients = patients
         self.preprocessing = preprocessing
 
         assert preprocessing in ['none', 'quantile', 'standard']
@@ -149,7 +149,7 @@ class SleepDataset2d(Dataset):
         self.data = []
         self.labels = []
 
-        for i, patient in enumerate(patietns):
+        for i, patient in enumerate(patients):
             if verbose:
                 print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
             data = np.load(os.path.join(data_path, patient))
@@ -205,31 +205,65 @@ class SleepDataset2d(Dataset):
 
 
 class SleepDatasetImg(Dataset):
-    def __init__(self, data_path, data_name, num_epoch, channels: List[str], transform=None, patients: List = None):
+    def __init__(self, data_path, data_name, num_epoch, transform, patients: List = None, verbose=True):
+        assert isinstance(patients, list)
+
         self.data_path = data_path
         self.data_name = data_name
         self.num_epoch = num_epoch
         self.transform = transform
-        self.channels = channels
         self.patients = patients
 
-        self.num_instance_per_patient = []
-        for patient in patients:
-            num_instance_old = None
-            for channel in channels:
-                files = os.listdir(os.path.join(data_path, channel, patient))
-                num_instance_new = len(files)
-                assert num_instance_old or num_instance_new == num_instance_old
-                num_instance_old = num_instance_new
-            self.num_instance_per_patient.append(num_instance_old // num_epoch * num_epoch)
+        self.data = []
+        self.labels = []
+
+        for i, patient in enumerate(patients):
+            if verbose:
+                print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
+            data = np.load(os.path.join(data_path, patient))
+            recordings = data['data']
+            annotations = data['label']
+
+            if verbose:
+                print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
+            recordings = recordings[:(recordings.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch,
+                                                                                             *recordings.shape[1:])
+            annotations = annotations[:(annotations.shape[0] // num_epoch) * num_epoch].reshape(-1, num_epoch)
+
+            assert recordings.shape[:2] == annotations.shape[:2]
+
+            self.data.append(recordings)
+            self.labels.append(annotations)
+
+        self.data = np.concatenate(self.data)
+        self.labels = np.concatenate(self.labels)
+        self.full_shape = self.data[0].shape
 
     def __getitem__(self, item):
-        images = []
-        for channel in self.channels:
-            img = Image.open(os.path.join())
+        x = self.data[item]
+        y = self.labels[item]
+
+        # x = torch.stack([self.transform(x[0]), self.transform(x[1])], dim=0)
+        # print(x.shape, x[:, 0].shape, '-------------')
+        x1 = torch.stack([self.transform(Image.fromarray(x[i][0])) for i in range(x.shape[0])], dim=0)  # TODO for temp
+        x2 = torch.stack([self.transform(Image.fromarray(x[i][1])) for i in range(x.shape[0])], dim=0)
+        x = torch.cat([x1, x2], dim=1)
+        y = torch.from_numpy(y.astype(np.long))
+
+        return x, y
 
     def __len__(self):
-        return np.sum(self.num_instance_per_patient)
+        return len(self.data)
+
+    def __repr__(self):
+        return """
+    **********************************************************************
+    Dataset Summary:
+    # Instance: {}
+    Shape of an Instance: {}
+    Selected patients: {}
+    **********************************************************************
+                """.format(len(self.data), self.full_shape, self.patients)
 
 
 class LmdbDatasetWithEdges(Dataset):

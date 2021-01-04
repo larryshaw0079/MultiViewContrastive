@@ -17,11 +17,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision.transforms as TF
+import wandb
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
 
-from mvc.data import SleepDataset, SleepDataset2d
+from mvc.data import SleepDataset, SleepDataset2d, SleepDatasetImg
 from mvc.model import DPCMem, DPCMemClassifier
 from mvc.utils import (
     logits_accuracy,
@@ -251,9 +253,16 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     if args.network == 'r1d':
         train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients,
                                      preprocessing=args.preprocessing)
-    else:
+    elif args.network == 'r2d':
         train_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, train_patients,
                                        preprocessing=args.preprocessing)
+    else:
+        transform = TF.Compose(
+            [TF.Resize((64, 64)), TF.ToTensor()]
+        )
+        train_dataset = SleepDatasetImg(args.data_path, args.data_name, args.num_epoch, transform=transform,
+                                        patients=train_patients)
+
     print(train_dataset)
 
     if args.resume:
@@ -292,9 +301,15 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     if args.network == 'r1d':
         test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
                                     preprocessing=args.preprocessing)
-    else:
+    elif args.network == 'r1d':
         test_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, test_patients,
                                       preprocessing=args.preprocessing)
+    else:
+        transform = TF.Compose(
+            [TF.Resize((64, 64)), TF.ToTensor()]
+        )
+        test_dataset = SleepDatasetImg(args.data_path, args.data_name, args.num_epoch, transform=transform,
+                                       patients=test_patients)
 
     print(test_dataset)
     scores, targets = evaluate(classifier, test_dataset, device, args)
@@ -309,6 +324,11 @@ if __name__ == '__main__':
 
     if args.seed is not None:
         setup_seed(args.seed)
+
+    if args.wandb:
+        with open('./data/wandb.txt', 'r') as f:
+            os.environ['WANDB_API_KEY'] = f.readlines()[0]
+        wandb.init(project='MVC', group=f'DPC', config=args)
 
     devices = args.devices
     if devices is None:
