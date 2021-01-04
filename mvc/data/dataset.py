@@ -14,10 +14,23 @@ import lmdb
 import numpy as np
 import torch
 from PIL import Image
-from sklearn.preprocessing import StandardScaler, QuantileTransformer
+from sklearn.preprocessing import QuantileTransformer
 from torch.utils.data import Dataset, Sampler
 
 from .transformation import Transformation
+
+EPS = 1e-8
+
+
+def tackle_denominator(x: np.ndarray):
+    x[x == 0.0] = EPS
+    return x
+
+
+def tensor_standardize(x: np.ndarray, dim=-1):
+    x_mean = np.expand_dims(x.mean(axis=dim), axis=dim)
+    x_std = np.expand_dims(x.std(axis=dim), axis=dim)
+    return (x - x_mean) / tackle_denominator(x_std)
 
 
 class LmdbDataset(Dataset):
@@ -77,12 +90,14 @@ class SleepDataset(Dataset):
 
             if preprocessing == 'standard':
                 print(f'[INFO] Applying standard scaler...')
-                scaler = StandardScaler()
-                recordings_old = recordings
-                recordings = []
-                for j in range(recordings_old.shape[0]):
-                    recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
-                recordings = np.stack(recordings, axis=0)
+                # scaler = StandardScaler()
+                # recordings_old = recordings
+                # recordings = []
+                # for j in range(recordings_old.shape[0]):
+                #     recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                # recordings = np.stack(recordings, axis=0)
+
+                recordings = tensor_standardize(recordings, dim=-1)
             elif preprocessing == 'quantile':
                 print(f'[INFO] Applying quantile scaler...')
                 scaler = QuantileTransformer(output_distribution='normal')
@@ -348,7 +363,7 @@ class TwoDataset(Dataset):
         self.dataset2 = dataset2
 
     def __getitem__(self, item):
-        return *self.dataset1[item], *self.dataset2[item]
+        return (*self.dataset1[item], *self.dataset2[item])
 
     def __len__(self):
         return len(self.dataset1)
