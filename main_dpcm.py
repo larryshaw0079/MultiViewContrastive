@@ -68,7 +68,8 @@ def parse_args(verbose=True):
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)
     parser.add_argument('--use-memory-pool', action='store_true')
-    parser.add_argument('--memory-pool-size', type=int, default=None)
+    parser.add_argument('--mem-k', type=int, default=None)
+    parser.add_argument('--mem-m', type=float, default=None)
 
     # Training
     parser.add_argument('--only-pretrain', action='store_true')
@@ -115,9 +116,11 @@ def parse_args(verbose=True):
 
 def pretrain(model, dataset, device, run_id, args):
     if args.optimizer == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+        optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.wd,
+                              momentum=args.momentum)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=args.wd,
+                               betas=(0.9, 0.98), eps=1e-09,
                                amsgrad=True)
     else:
         raise ValueError('Invalid optimizer!')
@@ -246,8 +249,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     model = DPCMem(network=args.network, input_channels=args.channels, hidden_channels=16,
                    feature_dim=args.feature_dim,
                    pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
-                   use_memory_pool=args.use_memory_pool, memory_pool_size=args.memory_pool_size,
-                   device=device)
+                   use_memory_pool=args.use_memory_pool, K=args.mem_k, m=args.mem_m, device=device)
     model.cuda(device)
 
     if args.network == 'r1d':

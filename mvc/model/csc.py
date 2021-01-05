@@ -57,6 +57,7 @@ class CSC(nn.Module):
         self.queue_second = F.normalize(self.queue_second, dim=0)
 
         self.register_buffer("queue_idx", torch.ones(K, dtype=torch.long) * -1)
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.queue_is_full = False
 
     def _dequeue_and_enqueue(self, feature_q, feature_k, idx):
