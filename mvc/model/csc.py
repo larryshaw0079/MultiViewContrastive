@@ -60,6 +60,15 @@ class CSC(nn.Module):
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.queue_is_full = False
 
+    @torch.no_grad()
+    def _momentum_update_key_encoder(self):
+        """
+        Momentum update of the key encoder
+        """
+        for param_q, param_k in zip(self.encoder.parameters(), self.mirror_encoder.parameters()):
+            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+
+    @torch.no_grad()
     def _dequeue_and_enqueue(self, feature_q, feature_k, idx):
         pass
 
@@ -124,6 +133,9 @@ class CSC(nn.Module):
             self.targets_pred = targets_pred
 
         targets_mem = torch.zeros(B1, num_epoch, self.K)
+        discovered_indices = torch.ones(B1 * num_epoch,
+                                        (1 - self.num_prop ** (self.prop_iter + 1)) / (1 - self.num_prop)).long() * -1
+        discovered_indices[:, 0] = idx
         for i in range(self.prop_iter):
             mem_sim = torch.einsum('ijk,km->ijm', [feature_k, self.queue_second.clone().detach()])
             mem_sim = mem_sim.view(B1 * num_epoch, self.K)

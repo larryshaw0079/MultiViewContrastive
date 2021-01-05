@@ -15,7 +15,7 @@ from ..backbone import R1DNet, R2DNet, GRU, ResNet
 
 class DPCMem(nn.Module):
     def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, use_temperature, temperature,
-                 use_memory_pool=False, m=None, K=None, device='cuda'):
+                 use_memory_pool=False, stop_memory=False, m=None, K=None, device='cuda'):
         super(DPCMem, self).__init__()
 
         self.network = network
@@ -26,6 +26,7 @@ class DPCMem(nn.Module):
         self.use_temperature = use_temperature
         self.temperature = temperature
         self.use_memory_pool = use_memory_pool
+        self.stop_memory = stop_memory
         self.m = m
         self.K = K
         self.device = device
@@ -94,6 +95,15 @@ class DPCMem(nn.Module):
         self._initialize_weights(self.agg)
         self._initialize_weights(self.predictor)
 
+    def start_memory(self):
+        assert self.stop_memory
+        print('[INFO] Start using memory...')
+        self.stop_memory = False
+        for param_q, param_k in zip(self.encoder.parameters(), self.mirror_encoder.parameters()):
+            param_k.data.copy_(param_q.data)  # initialize
+            param_k.requires_grad = False  # not update by gradient
+        self.targets = None
+
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
         """
@@ -130,12 +140,12 @@ class DPCMem(nn.Module):
         feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
         feature_relu = self.relu(feature_q)
 
-        if self.use_memory_pool:
+        if self.use_memory_pool and not self.stop_memory:
             with torch.no_grad():  # no gradient to keys
                 self._momentum_update_key_encoder()  # update the key encoder
 
-            feature_k = self.mirror_encoder(x)
-            feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
+                feature_k = self.mirror_encoder(x)
+                feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
 
         out, h_n = self.agg(feature_relu[:, :-self.pred_steps, :].contiguous())
 
@@ -155,12 +165,12 @@ class DPCMem(nn.Module):
         if self.use_temperature:
             feature_q = F.normalize(feature_q, p=2, dim=-1)
             pred = F.normalize(pred, p=2, dim=-1)
-            if self.use_memory_pool:
+            if self.use_memory_pool and not self.stop_memory:
                 feature_k = F.normalize(feature_k, p=2, dim=-1)
 
         # feature (batch_size, num_epoch, feature_size)
         # pred (batch_size, pred_steps, feature_size)
-        if self.use_memory_pool:
+        if self.use_memory_pool and not self.stop_memory:
             # cat_feature (batch_size, num_epoch, last_size+memsize, feature_size)
             assert self.K % batch_size == 0  # For simplicity
             # cat_feature = torch.cat([feature_q, self.queue.T.view(batch_size, -1, self.feature_dim)], dim=-2)
@@ -183,7 +193,7 @@ class DPCMem(nn.Module):
             logits /= self.temperature
 
         if self.targets is None:
-            if self.use_memory_pool:
+            if self.use_memory_pool and not self.stop_memory:
                 targets_pred = torch.zeros(batch_size, num_epoch, self.pred_steps, batch_size)
                 for i in range(batch_size):
                     for j in range(self.pred_steps):
@@ -205,7 +215,7 @@ class DPCMem(nn.Module):
                 targets = targets.cuda(device=self.device)
                 self.targets = targets
 
-        if self.use_memory_pool:
+        if self.use_memory_pool and not self.stop_memory:
             self._dequeue_and_enqueue(feature_k)
 
         return logits, self.targets

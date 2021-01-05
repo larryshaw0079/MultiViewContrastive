@@ -68,6 +68,7 @@ def parse_args(verbose=True):
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)
     parser.add_argument('--use-memory-pool', action='store_true')
+    parser.add_argument('--curriculum-epoch', type=int, default=None)
     parser.add_argument('--mem-k', type=int, default=None)
     parser.add_argument('--mem-m', type=float, default=None)
 
@@ -142,6 +143,8 @@ def pretrain(model, dataset, device, run_id, args):
         losses = []
         accuracies = []
         adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
+        if args.curriculum_epoch is not None and epoch == args.curriculum_epoch:
+            model.start_memory()
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
@@ -249,7 +252,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     model = DPCMem(network=args.network, input_channels=args.channels, hidden_channels=16,
                    feature_dim=args.feature_dim,
                    pred_steps=args.pred_steps, use_temperature=args.use_temperature, temperature=args.temperature,
-                   use_memory_pool=args.use_memory_pool, K=args.mem_k, m=args.mem_m, device=device)
+                   use_memory_pool=args.use_memory_pool, stop_memory=args.curriculum_epoch is not None, K=args.mem_k,
+                   m=args.mem_m, device=device)
     model.cuda(device)
 
     if args.network == 'r1d':
