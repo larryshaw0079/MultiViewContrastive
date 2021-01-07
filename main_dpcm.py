@@ -11,6 +11,7 @@ import os
 import pickle
 import random
 import shutil
+import sys
 import warnings
 
 import numpy as np
@@ -321,7 +322,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     scores, targets = evaluate(classifier, test_dataset, device, args)
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
-        pickle.dump({'performance': performance, 'args': vars(args)}, f)
+        pickle.dump({'performance': performance, 'args': vars(args), 'cmd': sys.argv}, f)
     print(performance)
 
 

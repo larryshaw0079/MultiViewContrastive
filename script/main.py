@@ -244,7 +244,8 @@ if __name__ == '__main__':
             classifier.cuda()
 
             # Copying encoder params
-            for finetune_param, pretraining_param in zip(classifier.encoder.parameters(), model.encoder.parameters()):
+            for finetune_param, pretraining_param in zip(classifier.encoder_q.parameters(),
+                                                         model.encoder_q.parameters()):
                 finetune_param.data = pretraining_param.data
 
             # Copying gru params

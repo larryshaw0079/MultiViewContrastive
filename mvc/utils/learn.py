@@ -9,6 +9,7 @@
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -45,3 +46,24 @@ def multi_nce_loss(logits, mask):
     mask_sum = mask.sum(1)
     loss = - torch.log((F.softmax(logits, dim=1) * mask).sum(1))
     return loss.mean()
+
+
+class MultiNCELoss(nn.Module):
+    def __init__(self, reduction='mean'):
+        super(MultiNCELoss, self).__init__()
+
+        assert reduction in ['none', 'sum', 'mean']
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        targets_sum = targets.sum(1)
+        loss = - torch.log((F.softmax(logits, dim=1) * targets).sum(1))
+
+        if self.reduction == 'none':
+            return loss
+        elif self.reduction == 'sum':
+            return loss.sum()
+        elif self.reduction == 'mean':
+            return loss.mean()
+        else:
+            raise ValueError

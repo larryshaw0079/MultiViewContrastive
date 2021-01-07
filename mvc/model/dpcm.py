@@ -36,13 +36,13 @@ class DPCMem(nn.Module):
             assert K is not None
 
         if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
-                                  final_fc=True)
+            self.encoder_q = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                                    final_fc=True)
             if use_memory_pool:
-                self.mirror_encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2,
-                                             kernel_size=[7, 11, 11, 7],
-                                             final_fc=True)
-            feature_size = self.encoder.feature_size
+                self.encoder_k = R1DNet(input_channels, hidden_channels, feature_dim, stride=2,
+                                        kernel_size=[7, 11, 11, 7],
+                                        final_fc=True)
+            feature_size = self.encoder_q.feature_size
             self.feature_size = feature_size
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
             self.predictor = nn.Sequential(
@@ -51,13 +51,14 @@ class DPCMem(nn.Module):
                 nn.Linear(feature_dim, feature_dim)
             )
         elif network == 'r2d':
-            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                  final_fc=True)
+            self.encoder_q = R2DNet(input_channels, hidden_channels, feature_dim,
+                                    stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+                                    final_fc=True)
             if use_memory_pool:
-                self.mirror_encoder = R2DNet(input_channels, hidden_channels, feature_dim,
-                                             stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                             final_fc=True)
-            feature_size = self.encoder.feature_size
+                self.encoder_k = R2DNet(input_channels, hidden_channels, feature_dim,
+                                        stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+                                        final_fc=True)
+            feature_size = self.encoder_q.feature_size
             self.feature_size = feature_size
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
             self.predictor = nn.Sequential(
@@ -66,9 +67,9 @@ class DPCMem(nn.Module):
                 nn.Linear(feature_dim, feature_dim)
             )
         elif network == 'r2d_img':
-            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
+            self.encoder_q = ResNet(input_channels=input_channels, num_classes=feature_dim)
             if use_memory_pool:
-                self.mirror_encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
+                self.encoder_k = ResNet(input_channels=input_channels, num_classes=feature_dim)
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
             self.predictor = nn.Sequential(
                 nn.Linear(feature_dim, feature_dim),
@@ -80,7 +81,7 @@ class DPCMem(nn.Module):
         # self.gru = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
 
         if use_memory_pool:
-            for param_q, param_k in zip(self.encoder.parameters(), self.mirror_encoder.parameters()):
+            for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
                 param_k.data.copy_(param_q.data)  # initialize
                 param_k.requires_grad = False  # not update by gradient
 
@@ -99,7 +100,7 @@ class DPCMem(nn.Module):
         assert self.stop_memory
         print('[INFO] Start using memory...')
         self.stop_memory = False
-        for param_q, param_k in zip(self.encoder.parameters(), self.mirror_encoder.parameters()):
+        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
             param_k.requires_grad = False  # not update by gradient
         self.targets = None
@@ -109,7 +110,7 @@ class DPCMem(nn.Module):
         """
         Momentum update of the key encoder
         """
-        for param_q, param_k in zip(self.encoder.parameters(), self.mirror_encoder.parameters()):
+        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
     @torch.no_grad()
@@ -136,7 +137,7 @@ class DPCMem(nn.Module):
         else:
             batch_size, num_epoch, channel, freq_len, time_len = x.shape
             x = x.view(batch_size * num_epoch, channel, freq_len, time_len)
-        feature_q = self.encoder(x)  # (batch_size, num_epoch, feature_size)
+        feature_q = self.encoder_q(x)  # (batch_size, num_epoch, feature_size)
         feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
         feature_relu = self.relu(feature_q)
 
@@ -144,7 +145,7 @@ class DPCMem(nn.Module):
             with torch.no_grad():  # no gradient to keys
                 self._momentum_update_key_encoder()  # update the key encoder
 
-                feature_k = self.mirror_encoder(x)
+                feature_k = self.encoder_k(x)
                 feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
 
         out, h_n = self.agg(feature_relu[:, :-self.pred_steps, :].contiguous())

@@ -61,13 +61,14 @@ class LmdbDataset(Dataset):
 
 class SleepDataset(Dataset):
     def __init__(self, data_path, data_name, num_epoch, patients: List = None, preprocessing: str = 'none',
-                 verbose=True):
+                 return_idx=False, verbose=True):
         assert isinstance(patients, list)
 
         self.data_path = data_path
         self.data_name = data_name
         self.patients = patients
         self.preprocessing = preprocessing
+        self.return_idx = return_idx
 
         assert preprocessing in ['none', 'quantile', 'standard']
 
@@ -123,6 +124,7 @@ class SleepDataset(Dataset):
 
         self.data = np.concatenate(self.data)
         self.labels = np.concatenate(self.labels)
+        self.idx = np.arange(self.data.shape[0] * self.data.shape[1]).reshape(-1, self.data.shape[1])
         self.full_shape = self.data[0].shape
 
     def __getitem__(self, item):
@@ -132,7 +134,10 @@ class SleepDataset(Dataset):
         x = torch.from_numpy(x.astype(np.float32))
         y = torch.from_numpy(y.astype(np.long))
 
-        return x, y
+        if self.return_idx:
+            return x, y, torch.from_numpy(self.idx[item].astype(np.long))
+        else:
+            return x, y
 
     def __len__(self):
         return len(self.data)
@@ -220,7 +225,8 @@ class SleepDataset2d(Dataset):
 
 
 class SleepDatasetImg(Dataset):
-    def __init__(self, data_path, data_name, num_epoch, transform, patients: List = None, verbose=True):
+    def __init__(self, data_path, data_name, num_epoch, transform, patients: List = None, return_idx=False,
+                 verbose=True):
         assert isinstance(patients, list)
 
         self.data_path = data_path
@@ -228,6 +234,7 @@ class SleepDatasetImg(Dataset):
         self.num_epoch = num_epoch
         self.transform = transform
         self.patients = patients
+        self.return_idx = return_idx
 
         self.data = []
         self.labels = []
@@ -252,6 +259,7 @@ class SleepDatasetImg(Dataset):
 
         self.data = np.concatenate(self.data)
         self.labels = np.concatenate(self.labels)
+        self.idx = np.arange(self.data.shape[0] * self.data.shape[1]).reshape(-1, self.data.shape[1])
         self.full_shape = self.data[0].shape
 
     def __getitem__(self, item):
@@ -265,7 +273,10 @@ class SleepDatasetImg(Dataset):
         x = torch.cat([x1, x2], dim=1)
         y = torch.from_numpy(y.astype(np.long))
 
-        return x, y
+        if self.return_idx:
+            return x, y, torch.from_numpy(self.idx[item].astype(np.long))
+        else:
+            return x, y
 
     def __len__(self):
         return len(self.data)
