@@ -24,7 +24,7 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
 
-from mvc.data import SleepDataset, SleepDataset2d, SleepDatasetImg
+from mvc.data import SleepDataset, SleepDatasetImg
 from mvc.model import DPCMem, DPCMemClassifier
 from mvc.utils import (
     logits_accuracy,
@@ -64,7 +64,7 @@ def parse_args(verbose=True):
     parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='standard')
 
     # Model
-    parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d', 'r2d_img'])
+    parser.add_argument('--network', type=str, default='r1d', choices=['r1d', 'r2d'])
     parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--pred-steps', type=int, default=5)
@@ -260,9 +260,9 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     if args.network == 'r1d':
         train_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, train_patients,
                                      preprocessing=args.preprocessing)
-    elif args.network == 'r2d':
-        train_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, train_patients,
-                                       preprocessing=args.preprocessing)
+    # elif args.network == 'r2d':
+    #     train_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, train_patients,
+    #                                    preprocessing=args.preprocessing)
     else:
         transform = TF.Compose(
             [TF.Resize((64, 64)), TF.ToTensor()]
@@ -308,9 +308,9 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     if args.network == 'r1d':
         test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
                                     preprocessing=args.preprocessing)
-    elif args.network == 'r1d':
-        test_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, test_patients,
-                                      preprocessing=args.preprocessing)
+    # elif args.network == 'r2d':
+    #     test_dataset = SleepDataset2d(args.data_path, args.data_name, args.num_epoch, test_patients,
+    #                                   preprocessing=args.preprocessing)
     else:
         transform = TF.Compose(
             [TF.Resize((64, 64)), TF.ToTensor()]

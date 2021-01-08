@@ -27,7 +27,7 @@ from tqdm.std import tqdm
 
 from mvc.data import SleepDataset, SleepDatasetImg, TwoDataset
 from mvc.model import MC3, DPCMemClassifier
-from mvc.utils import get_performance, logits_accuracy, MultiNCELoss
+from mvc.utils import get_performance, logits_accuracy, mask_accuracy, MultiNCELoss
 
 
 def setup_seed(seed):
@@ -136,13 +136,12 @@ def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args):
     data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
                              shuffle=True, pin_memory=True, drop_last=True)
 
-    pred_criterion = nn.CrossEntropyLoss().cuda(device)
-    mem_criterion = MultiNCELoss(reduction='mean').cuda(device)
+    # pred_criterion = nn.CrossEntropyLoss().cuda(device)
+    criterion = MultiNCELoss(reduction='mean').cuda(device)
 
     model.train()
     for epoch in range(args.pretrain_epochs):
-        losses_pred = []
-        losses_mem = []
+        losses = []
         accuracies = []
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]',
                   total=len(train_dataset_v1) // args.batch_size) as progress_bar:
@@ -152,39 +151,40 @@ def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args):
                 f = f.cuda(device, non_blocking=True)
                 idx = idx1.cuda(device, non_blocking=True)
 
-                logits_pred, logits_mem, targets_pred, targets_mem = model(x, f, idx)
+                logits, targets = model(x, f, idx)
 
-                loss_pred = pred_criterion(logits_pred, targets_pred)
-                loss_mem = None
-                if model.queue_is_full:
-                    loss_mem = mem_criterion(logits_mem, targets_mem)
-                    loss = loss_pred + loss_mem
-                else:
-                    loss = loss_pred
+                loss = criterion(logits, targets)
 
-                acc = logits_accuracy(logits_pred, targets_pred, topk=(1,))[0]
+                # loss_pred = pred_criterion(logits_pred, targets_pred)
+                # loss_mem = None
+                # if model.queue_is_full:
+                #     loss_mem = mem_criterion(logits_mem, targets_mem)
+                #     loss = loss_pred + loss_mem
+                # else:
+                #     loss = loss_pred
+
+                acc = mask_accuracy(logits, targets, topk=(1,))[0]
                 accuracies.append(acc)
 
                 # if random.random() < 0.9:
                 #     # because model has been pretrained with infoNCE,
                 #     # in this stage, self-similarity is already very high,
                 #     # randomly mask out the self-similarity for optimization efficiency,
-                #     mask_clone = mask.clone()
-                #     mask_clone[mask_sum != 1, 0] = 0  # mask out self-similarity
-                #     loss = multi_nce_loss(logits, mask_clone)
+                #     targets_clone = targets.clone()
+                #     targets_sum = targets.sum(1)
+                #     targets_clone[targets_sum != 1, 0] = 0  # mask out self-similarity
+                #     loss = criterion(logits, targets_clone)
                 # else:
-                #     loss = multi_nce_loss(logits, mask)
+                loss = criterion(logits, targets)
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-                losses_pred.append(loss_pred.item())
-                if loss_mem is not None:
-                    losses_mem.append(loss_mem.item())
+                losses.append(loss.item())
 
                 progress_bar.set_postfix(
-                    {'LP': np.mean(losses_pred), 'LM': np.mean(losses_mem), 'Acc': np.mean(accuracies)})
+                    {'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
 
 def finetune(classifier, dataset, device, args):
@@ -314,12 +314,14 @@ def main_worker(run_id, device, train_patients, test_patients, args):
         if reverse:
             model = MC3(network=args.network, input_channels_v1=args.channels_v1, input_channels_v2=args.channels_v2,
                         hidden_channels=16, feature_dim=args.feature_dim, pred_steps=args.pred_steps,
-                        reverse=True, temperature=args.temperature, K=args.mem_k, prop_iter=args.prop_iter,
+                        reverse=True, temperature=args.temperature, m=args.mem_m, K=args.mem_k,
+                        prop_iter=args.prop_iter,
                         num_prop=args.num_prop, device=device)
         else:
             model = MC3(network=args.network, input_channels_v1=args.channels_v1, input_channels_v2=args.channels_v2,
                         hidden_channels=16, feature_dim=args.feature_dim, pred_steps=args.pred_steps,
-                        reverse=False, temperature=args.temperature, K=args.mem_k, prop_iter=args.prop_iter,
+                        reverse=False, temperature=args.temperature, m=args.mem_m, K=args.mem_k,
+                        prop_iter=args.prop_iter,
                         num_prop=args.num_prop, device=device)
 
         model.cuda(device)

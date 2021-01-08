@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..backbone import R1DNet, R2DNet, GRU, ResNet
+from ..backbone import R1DNet, GRU, ResNet
 
 
 class DPCMem(nn.Module):
@@ -50,23 +50,23 @@ class DPCMem(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(feature_dim, feature_dim)
             )
+        # elif network == 'r2d':
+        #     self.encoder_q = R2DNet(input_channels, hidden_channels, feature_dim,
+        #                             stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+        #                             final_fc=True)
+        #     if use_memory_pool:
+        #         self.encoder_k = R2DNet(input_channels, hidden_channels, feature_dim,
+        #                                 stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+        #                                 final_fc=True)
+        #     feature_size = self.encoder_q.feature_size
+        #     self.feature_size = feature_size
+        #     self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
+        #     self.predictor = nn.Sequential(
+        #         nn.Linear(feature_dim, feature_dim),
+        #         nn.ReLU(inplace=True),
+        #         nn.Linear(feature_dim, feature_dim)
+        #     )
         elif network == 'r2d':
-            self.encoder_q = R2DNet(input_channels, hidden_channels, feature_dim,
-                                    stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                    final_fc=True)
-            if use_memory_pool:
-                self.encoder_k = R2DNet(input_channels, hidden_channels, feature_dim,
-                                        stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                        final_fc=True)
-            feature_size = self.encoder_q.feature_size
-            self.feature_size = feature_size
-            self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
-            self.predictor = nn.Sequential(
-                nn.Linear(feature_dim, feature_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(feature_dim, feature_dim)
-            )
-        elif network == 'r2d_img':
             self.encoder_q = ResNet(input_channels=input_channels, num_classes=feature_dim)
             if use_memory_pool:
                 self.encoder_k = ResNet(input_channels=input_channels, num_classes=feature_dim)
@@ -93,7 +93,7 @@ class DPCMem(nn.Module):
             self.queue = nn.functional.normalize(self.queue, dim=0)
             self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
-        self._initialize_weights(self.agg)
+        # self._initialize_weights(self.agg)
         self._initialize_weights(self.predictor)
 
     def start_memory(self):
@@ -131,12 +131,8 @@ class DPCMem(nn.Module):
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
-        if self.network == 'r1d':
-            batch_size, num_epoch, channel, time_len = x.shape
-            x = x.view(batch_size * num_epoch, channel, time_len)
-        else:
-            batch_size, num_epoch, channel, freq_len, time_len = x.shape
-            x = x.view(batch_size * num_epoch, channel, freq_len, time_len)
+        batch_size, num_epoch, *x_shape = x.shape
+        x = x.view(batch_size * num_epoch, *x_shape)
         feature_q = self.encoder_q(x)  # (batch_size, num_epoch, feature_size)
         feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
         feature_relu = self.relu(feature_q)
@@ -250,13 +246,13 @@ class DPCMemClassifier(nn.Module):
             feature_size = self.encoder.feature_size
             self.feature_size = feature_size
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
+        # elif network == 'r2d':
+        #     self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
+        #                           final_fc=True)
+        #     feature_size = self.encoder.feature_size
+        #     self.feature_size = feature_size
+        #     self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         elif network == 'r2d':
-            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                  final_fc=True)
-            feature_size = self.encoder.feature_size
-            self.feature_size = feature_size
-            self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
-        elif network == 'r2d_img':
             self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         else:
@@ -273,13 +269,11 @@ class DPCMemClassifier(nn.Module):
         final_fc.append(nn.Linear(feature_dim, num_class))
         self.final_fc = nn.Sequential(*final_fc)
 
+        self._initialize_weights(self.final_fc)
+
     def forward(self, x):
-        if self.network == 'r1d':
-            batch_size, num_epoch, channel, time_len = x.shape
-            x = x.view(batch_size * num_epoch, channel, time_len)
-        else:
-            batch_size, num_epoch, channel, freq_len, time_len = x.shape
-            x = x.view(batch_size * num_epoch, channel, freq_len, time_len)
+        batch_size, num_epoch, *x_shape = x.shape
+        x = x.view(batch_size * num_epoch, *x_shape)
         feature = self.encoder(x)
         feature = self.relu(feature)
         feature = feature.view(batch_size, num_epoch, self.feature_dim)
@@ -297,3 +291,10 @@ class DPCMemClassifier(nn.Module):
         # print('3. Out: ', out.shape)
 
         return out
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)

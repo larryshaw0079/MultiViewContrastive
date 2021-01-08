@@ -19,5 +19,11 @@ class MLP(nn.Module):
             nn.Linear(output_dim, output_dim)
         )
 
+        for name, param in self.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
+
     def forward(self, x):
         return self.pred(x)

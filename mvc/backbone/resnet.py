@@ -91,6 +91,9 @@ class R1DNet(nn.Module):
             elif isinstance(m, (nn.BatchNorm1d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, 1)
+                nn.init.constant_(m.bias, 0.0)
 
     def __make_layer(self, num_block, in_channel, out_channel, kernel_size, stride):
         layers = []
@@ -203,6 +206,9 @@ class R2DNet(nn.Module):
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, 1)
+                nn.init.constant_(m.bias, 0.0)
 
     def __make_layer(self, num_block, in_channel, out_channel, kernel_size, stride):
         layers = []

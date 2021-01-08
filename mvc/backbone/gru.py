@@ -23,6 +23,12 @@ class GRU(nn.Module):
         self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
                           batch_first=True, dropout=dropout)
 
+        for name, param in self.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
+
     def forward(self, x, h_0=None):
         # x:   (batch, seq_len,    input_size)
         # h_0: (num_layers, batch, hidden_size)

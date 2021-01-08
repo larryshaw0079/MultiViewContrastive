@@ -16,14 +16,14 @@ from ..backbone import R1DNet, ResNet, GRU
 
 class MC3(nn.Module):
     def __init__(self, network, input_channels_v1, input_channels_v2, hidden_channels, feature_dim, pred_steps, reverse,
-                 temperature,
-                 K, prop_iter, num_prop, device):
+                 temperature, m, K, prop_iter, num_prop, device):
         super(MC3, self).__init__()
 
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
         self.reverse = reverse
         self.temperature = temperature
+        self.m = m
         self.K = K
         self.prop_iter = prop_iter
         self.num_prop = num_prop
@@ -46,19 +46,24 @@ class MC3(nn.Module):
                 self.sampler = ResNet(input_channels=input_channels_v2, num_classes=feature_dim)
         else:
             if reverse:
-                self.encoder_q = R1DNet(input_channels_v1, hidden_channels, feature_dim, stride=2,
+                self.encoder_q = R1DNet(input_channels_v2, hidden_channels, feature_dim, stride=2,
                                         kernel_size=[7, 11, 11, 7],
                                         final_fc=True)
-                self.encoder_k = R1DNet(input_channels_v1, hidden_channels, feature_dim, stride=2,
+                self.encoder_k = R1DNet(input_channels_v2, hidden_channels, feature_dim, stride=2,
                                         kernel_size=[7, 11, 11, 7],
                                         final_fc=True)
-                self.sampler = ResNet(input_channels=input_channels_v2, num_classes=feature_dim)
+                self.sampler = ResNet(input_channels=input_channels_v1, num_classes=feature_dim)
             else:
-                self.encoder_q = ResNet(input_channels=input_channels_v2, num_classes=feature_dim)
-                self.encoder_k = ResNet(input_channels=input_channels_v2, num_classes=feature_dim)
-                self.sampler = R1DNet(input_channels_v1, hidden_channels, feature_dim, stride=2,
+                self.encoder_q = ResNet(input_channels=input_channels_v1, num_classes=feature_dim)
+                self.encoder_k = ResNet(input_channels=input_channels_v1, num_classes=feature_dim)
+                self.sampler = R1DNet(input_channels_v2, hidden_channels, feature_dim, stride=2,
                                       kernel_size=[7, 11, 11, 7],
                                       final_fc=True)
+
+        for param_s in self.sampler.parameters():
+            param_s.requires_grad = False
+        for param_k in self.encoder_k.parameters():
+            param_k.requires_grad = False
 
         self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         self.predictor = nn.Sequential(
@@ -79,6 +84,8 @@ class MC3(nn.Module):
         self.register_buffer("queue_idx", torch.ones(K, dtype=torch.long) * -1)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
         self.queue_is_full = False
+
+        self._initialize_weights(self.predictor)
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -110,22 +117,15 @@ class MC3(nn.Module):
         (B1, num_epoch, *epoch_shape1) = x1.shape
         (B2, num_epoch, *epoch_shape2) = x2.shape
 
+        # Compute query features for the first view
         x1 = x1.view(B1 * num_epoch, *epoch_shape1)
         feature_q = self.encoder_q(x1)
+        feature_q = F.normalize(feature_q, p=2, dim=-1)
         feature_q = feature_q.view(B1, num_epoch, self.feature_dim)
 
-        feature_k = self.encoder_k(x1)
-        feature_k = feature_k.view(B1, num_epoch, self.feature_dim)
-
-        x2 = x2.view(B2 * num_epoch, *epoch_shape2)
-        feature_kf = self.sampler(x2)
-        feature_kf = feature_kf.view(B2, num_epoch, self.feature_dim)
-
-        feature_relu = self.relu(feature_q)
-
-        out, h_n = self.agg(feature_relu[:, :-self.pred_steps, :].contiguous())
-
         # Get predictions
+        feature_relu = self.relu(feature_q)
+        out, h_n = self.agg(feature_relu[:, :-self.pred_steps, :].contiguous())
         pred = []
         h_next = h_n
         c_next = out[:, -1, :].squeeze(1)
@@ -137,17 +137,31 @@ class MC3(nn.Module):
         pred = torch.stack(pred, 1)  # (batch, pred_step, feature_dim)
         # Compute scores
         pred = pred.contiguous()
-
-        feature_q = F.normalize(feature_q, p=2, dim=-1)
-        feature_k = F.normalize(feature_k, p=2, dim=-1)
-        feature_kf = F.normalize(feature_kf, p=2, dim=-1)
         pred = F.normalize(pred, p=2, dim=-1)
 
-        logits_pred = torch.einsum('ijk,mnk->ijnm', [feature_k, pred])
-        logits_pred = logits_pred.view(B1 * num_epoch, self.pred_steps * B1)
-        logits_pred = logits_pred.t()
+        with torch.no_grad():
+            self._momentum_update_key_encoder()
 
-        logits_pred /= self.temperature
+            # Compute key features for the first view
+            feature_k = self.encoder_k(x1)
+            feature_k = F.normalize(feature_k, p=2, dim=-1)
+            feature_k = feature_k.view(B1, num_epoch, self.feature_dim)
+
+            # Compute key features for the second view
+            x2 = x2.view(B2 * num_epoch, *epoch_shape2)
+            feature_kf = self.sampler(x2)
+            feature_kf = F.normalize(feature_kf, p=2, dim=-1)
+            feature_kf = feature_kf.view(B2, num_epoch, self.feature_dim)
+
+        # Compute logits
+        logits_pred = torch.einsum('ijk,mnk->ijnm', [pred, feature_k])
+        logits_pred = logits_pred.view(B1 * self.pred_steps, num_epoch * B1)
+
+        logits_mem = torch.einsum('mnk,ki->mni', [pred, self.queue_first.clone().detach()])
+        logits_mem = logits_mem.view(B1 * self.pred_steps, self.K)
+        logits = torch.cat([logits_pred, logits_mem], dim=-1)
+
+        logits /= self.temperature
 
         if not self.queue_is_full:
             self.queue_is_full = torch.all(self.queue_idx != -1)
@@ -161,20 +175,13 @@ class MC3(nn.Module):
                     targets_pred[i, num_epoch - self.pred_steps + j, j, i] = 1
             targets_pred = targets_pred.view(B1 * num_epoch, self.pred_steps * B1)
             targets_pred = targets_pred.t()
-            targets_pred = targets_pred.argmax(dim=1)
             targets_pred = targets_pred.cuda(device=self.device)
             self.targets_pred = targets_pred
 
-        targets_mem = None
-        logits_mem = None
-        if self.queue_is_full:
-            logits_mem = torch.einsum('ki,mnk->inm', [self.queue_first.clone().detach(), pred])
-            logits_mem = logits_mem.view(self.K, self.pred_steps * B1)
-            logits_mem = logits_mem.t()  # (B, pred_steps, K)
-            logits_mem /= self.temperature
+        targets_mem = torch.zeros(B1, self.pred_steps, self.K)
+        targets_mem = targets_mem.cuda(self.device)
 
-            targets_mem = torch.zeros(B1, self.pred_steps, self.K)
-            targets_mem = targets_mem.cuda(self.device)
+        if self.queue_is_full:
             mem_sim = torch.einsum('ijk,km->ijm', [feature_kf[:, -self.pred_steps:, :],
                                                    self.queue_second.clone().detach()])  # (B, num_epoch, K)
             mem_sim[idx.unsqueeze(-1)[:, -self.pred_steps:] == self.queue_idx.unsqueeze(
@@ -189,19 +196,13 @@ class MC3(nn.Module):
             _, topk_idx = torch.topk(queue_sim, k=self.num_prop, dim=-1)
             _, topk_idx_second = torch.topk(queue_sim_second, k=self.num_prop, dim=-1)
             del queue_sim, queue_sim_second
-            neighbor_mat = torch.zeros(self.K, self.K)
-            neighbor_mat = neighbor_mat.cuda(self.device)
+            neighbor_mat = torch.zeros(self.K, self.K).cuda(self.device)
             neighbor_mat.scatter_(-1, topk_idx, 1)
-            neighbor_mat_second = torch.zeros(self.K, self.K)
-            neighbor_mat_second = neighbor_mat_second.cuda(self.device)
+            neighbor_mat_second = torch.zeros(self.K, self.K).cuda(self.device)
             neighbor_mat_second.scatter_(-1, topk_idx_second, 1)
-            queue_tmp_mat = torch.eye(self.K)  # for matrix power
-            queue_tmp_mat = queue_tmp_mat.cuda(self.device)
-            queue_idx = torch.zeros(self.K, self.K)
-            queue_idx = queue_idx.cuda(self.device)
+            queue_tmp_mat = torch.eye(self.K).cuda(self.device)  # for matrix power
+            queue_idx = torch.zeros(self.K, self.K).cuda(self.device)
             for i in range(1, self.prop_iter):
-                # topk_idx (K, topk)
-                # targets_mem[i][j][topk_idx[targets_mem[i][j]].flatten()] = 1
                 if i % 2 == 1:
                     queue_tmp_mat = torch.mm(queue_tmp_mat, neighbor_mat)
                 else:
@@ -210,10 +211,19 @@ class MC3(nn.Module):
                 queue_idx += queue_tmp_mat
 
             targets_mem.matmul(queue_idx)
-            targets_mem = targets_mem.view(self.pred_steps * B1, self.K)
+
+        targets_mem = targets_mem.view(self.pred_steps * B1, self.K)
+        targets = torch.cat([self.targets_pred, targets_mem], dim=-1)
 
         self._dequeue_and_enqueue(feature_k.view(B1 * num_epoch, self.feature_dim),
                                   feature_kf.view(B1 * num_epoch, self.feature_dim),
                                   idx.view(B1 * num_epoch))
 
-        return logits_pred, logits_mem, self.targets_pred, targets_mem
+        return logits, targets
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)

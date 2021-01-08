@@ -29,6 +29,23 @@ def logits_accuracy(output, target, topk=(1,)):
         return res
 
 
+def mask_accuracy(output, target_mask, topk=(1,)):
+    maxk = max(topk)
+    _, pred = output.topk(maxk, 1, True, True)
+
+    zeros = torch.zeros_like(target_mask).long()
+    pred_mask = torch.zeros_like(target_mask).long()
+
+    res = []
+    for k in range(maxk):
+        pred_ = pred[:, k].unsqueeze(1)
+        onehot = zeros.scatter(1, pred_, 1)
+        pred_mask = onehot + pred_mask  # accumulate
+        if k + 1 in topk:
+            res.append(((pred_mask * target_mask).sum(1) >= 1).float().mean(0).item())
+    return res
+
+
 def get_performance(scores: np.ndarray, labels: np.ndarray):
     predictions = np.argmax(scores, axis=1)
 
