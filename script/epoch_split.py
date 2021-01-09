@@ -48,7 +48,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     assert args.data_name in ['sleepedf_39', 'sleepedf_153', 'sleepedf_39_hht',
-                              'sleepedf_153_hht']
+                              'sleepedf_153_hht', 'isruc']
 
     if args.extend_edges and args.extend_num is None:
         raise ValueError('Console parameter `extend_num` must be specified when `extend_edges` enabled!')
@@ -77,6 +77,10 @@ if __name__ == '__main__':
         elif args.data_name in ['sleepedf_39_hht', 'sleepedf_153_hht']:
             recordings = data['data']
             annotations = data['annotation']
+        elif args.data_name in ['isruc']:
+            recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
+                                   data['O1_A2'], data['O2_A1']], axis=1)
+            annotations = data['label'].reshape(-1)
         else:
             raise ValueError
 

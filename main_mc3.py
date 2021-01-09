@@ -14,6 +14,7 @@ import random
 import shutil
 import sys
 import warnings
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -420,6 +421,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
         pickle.dump({'performance': performance, 'args': vars(args), 'cmd': sys.argv}, f)
+    performance.to_csv(os.path.join(args.save_path, 'performance.csv'), index=False)
     print(performance)
 
 
@@ -432,7 +434,10 @@ if __name__ == '__main__':
     if args.wandb:
         with open('./data/wandb.txt', 'r') as f:
             os.environ['WANDB_API_KEY'] = f.readlines()[0]
-        wandb.init(project='MVC', group=f'DPC', config=args)
+        name = 'mc3'
+        name += f'_fold{args.fold}'
+        name += datetime.now().strftime('_%m-%d_%H-%M')
+        wandb.init(project='MC3', group='MC3', name=name, config=args)
 
     devices = args.devices
     if devices is None:

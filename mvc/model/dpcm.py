@@ -168,39 +168,41 @@ class DPCMem(nn.Module):
         # feature (batch_size, num_epoch, feature_size)
         # pred (batch_size, pred_steps, feature_size)
         if self.use_memory_pool and not self.stop_memory:
-            # cat_feature (batch_size, num_epoch, last_size+memsize, feature_size)
-            assert self.K % batch_size == 0  # For simplicity
-            # cat_feature = torch.cat([feature_q, self.queue.T.view(batch_size, -1, self.feature_dim)], dim=-2)
-            # logits = torch.einsum('ijk,mnk->ijnm', [cat_feature, pred])
-            # logits = logits.view(batch_size * (num_epoch + self.memory_pool_size // batch_size),
-            #                      self.pred_steps * batch_size)
-            logits_pred = torch.einsum('ijk,mnk->ijnm', [feature_k, pred])
-            logits_pred = logits_pred.view(batch_size * num_epoch, self.pred_steps * batch_size)
+            # logits_pred = torch.einsum('ijk,mnk->ijnm', [pred, feature_k])
+            # logits_pred = logits_pred.view(batch_size * self.pred_steps, num_epoch * batch_size)
+            #
+            # logits_mem = torch.einsum('mnk,ki->mni', [pred, self.queue.clone().detach()])
+            # logits_mem = logits_mem.view(batch_size*self.pred_steps, self.K)
 
-            logits_mem = torch.einsum('ki,mnk->inm', [self.queue.clone().detach(), pred])
-            logits_mem = logits_mem.view(self.K, self.pred_steps * batch_size)
+            # logits = torch.cat([logits_pred, logits_mem], dim=-1)
 
-            logits = torch.cat([logits_pred, logits_mem], dim=0)
-            logits = logits.t()
+            logits_pos = torch.einsum('ijk,ijk->ij', [pred, feature_k[:, -self.pred_steps:, :]])
+            logits_pos = logits_pos.view(batch_size * self.pred_steps, 1)
+
+            logits_neg = torch.einsum('ijk,km->ijm', [pred, self.queue.clone().detach()])
+            logits_neg = logits_neg.view(batch_size * self.pred_steps, self.K)
+
+            logits = torch.cat([logits_pos, logits_neg], dim=-1)
         else:
-            logits = torch.einsum('ijk,mnk->ijnm', [feature_q, pred])
-            logits = logits.view(batch_size * num_epoch, self.pred_steps * batch_size)
+            logits = torch.einsum('ijk,mnk->ijnm', [pred, feature_q])
+            logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
 
         if self.use_temperature:
             logits /= self.temperature
 
         if self.targets is None:
             if self.use_memory_pool and not self.stop_memory:
-                targets_pred = torch.zeros(batch_size, num_epoch, self.pred_steps, batch_size)
-                for i in range(batch_size):
-                    for j in range(self.pred_steps):
-                        targets_pred[i, num_epoch - self.pred_steps + j, j, i] = 1
-                targets_pred = targets_pred.view(batch_size * num_epoch, self.pred_steps * batch_size)
-                targets_mem = torch.zeros(self.K, self.pred_steps * batch_size)
-                targets = torch.cat([targets_pred, targets_mem], dim=0)
-                targets = targets.t()
-                targets = targets.argmax(dim=1)
-                targets = targets.cuda(device=self.device)
+                # targets_pred = torch.zeros(batch_size, num_epoch, self.pred_steps, batch_size)
+                # for i in range(batch_size):
+                #     for j in range(self.pred_steps):
+                #         targets_pred[i, num_epoch - self.pred_steps + j, j, i] = 1
+                # targets_pred = targets_pred.view(batch_size * num_epoch, self.pred_steps * batch_size)
+                # targets_mem = torch.zeros(self.K, self.pred_steps * batch_size)
+                # targets = torch.cat([targets_pred, targets_mem], dim=0)
+                # targets = targets.t()
+                # targets = targets.argmax(dim=1)
+                # targets = targets.cuda(device=self.device)
+                targets = torch.zeros(logits.shape[0]).long().cuda(self.device)
                 self.targets = targets
             else:
                 targets = torch.zeros(batch_size, num_epoch, self.pred_steps, batch_size)
@@ -208,6 +210,7 @@ class DPCMem(nn.Module):
                     for j in range(self.pred_steps):
                         targets[i, num_epoch - self.pred_steps + j, j, i] = 1
                 targets = targets.view(batch_size * num_epoch, self.pred_steps * batch_size)
+                targets = targets.t()
                 targets = targets.argmax(dim=1)
                 targets = targets.cuda(device=self.device)
                 self.targets = targets
@@ -241,9 +244,9 @@ class DPCMemClassifier(nn.Module):
         self.use_batch_norm = use_batch_norm
 
         if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
-                                  final_fc=True)
-            feature_size = self.encoder.feature_size
+            self.encoder_q = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
+                                    final_fc=True)
+            feature_size = self.encoder_q.feature_size
             self.feature_size = feature_size
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         # elif network == 'r2d':
@@ -253,7 +256,7 @@ class DPCMemClassifier(nn.Module):
         #     self.feature_size = feature_size
         #     self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         elif network == 'r2d':
-            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
+            self.encoder_q = ResNet(input_channels=input_channels, num_classes=feature_dim)
             self.agg = GRU(input_size=feature_dim, hidden_size=feature_dim, num_layers=2, device=device)
         else:
             raise ValueError
@@ -269,12 +272,21 @@ class DPCMemClassifier(nn.Module):
         final_fc.append(nn.Linear(feature_dim, num_class))
         self.final_fc = nn.Sequential(*final_fc)
 
-        self._initialize_weights(self.final_fc)
+        # self._initialize_weights(self.final_fc)
+        for m in self.final_fc.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm1d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, 1)
+                nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x):
         batch_size, num_epoch, *x_shape = x.shape
         x = x.view(batch_size * num_epoch, *x_shape)
-        feature = self.encoder(x)
+        feature = self.encoder_q(x)
         feature = self.relu(feature)
         feature = feature.view(batch_size, num_epoch, self.feature_dim)
 

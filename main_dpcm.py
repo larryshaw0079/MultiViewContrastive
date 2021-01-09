@@ -13,6 +13,7 @@ import random
 import shutil
 import sys
 import warnings
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -163,6 +164,9 @@ def pretrain(model, dataset, device, run_id, args):
                 losses.append(loss.item())
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+        if args.wandb:
+            wandb.log({'pretrain_loss': np.mean(losses), 'pretrain_acc': np.mean(accuracies)})
+
         if (epoch + 1) % args.save_interval == 0:
             torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
                        os.path.join(args.save_path, f'dpc_run_{run_id}_pretrain_{epoch}.pth.tar'))
@@ -225,6 +229,8 @@ def finetune(classifier, dataset, device, args):
                 accuracies.append(logits_accuracy(out, y[:, -args.pred_steps - 1], topk=(1,))[0])
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+        if args.wandb:
+            wandb.log({'finetune_loss': np.mean(losses), 'finetune_acc': np.mean(accuracies)})
 
 
 def evaluate(classifier, dataset, device, args):
@@ -323,6 +329,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
         pickle.dump({'performance': performance, 'args': vars(args), 'cmd': sys.argv}, f)
+    performance.to_csv(os.path.join(args.save_path, 'performance.csv'), index=False)
     print(performance)
 
 
@@ -335,7 +342,13 @@ if __name__ == '__main__':
     if args.wandb:
         with open('./data/wandb.txt', 'r') as f:
             os.environ['WANDB_API_KEY'] = f.readlines()[0]
-        wandb.init(project='MVC', group=f'DPC', config=args)
+        if args.network == 'r1d':
+            name = 'r1d'
+        else:
+            name = 'hht'
+        name += f'_fold{args.fold}'
+        name += datetime.now().strftime('_%m-%d_%H-%M')
+        wandb.init(project='MC3', group='DPCM' if args.use_memory_pool else 'DPC', name=name, config=args)
 
     devices = args.devices
     if devices is None:
