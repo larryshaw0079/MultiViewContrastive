@@ -73,7 +73,7 @@ class MC3(nn.Module):
         )
 
         self.relu = nn.ReLU(inplace=True)
-        self.targets_pred = None
+        # self.targets_pred = None
 
         self.register_buffer("queue_first", torch.randn(feature_dim, K))
         self.queue_first = F.normalize(self.queue_first, dim=0)
@@ -154,12 +154,20 @@ class MC3(nn.Module):
             feature_kf = feature_kf.view(B2, num_epoch, self.feature_dim)
 
         # Compute logits
-        logits_pred = torch.einsum('ijk,mnk->ijnm', [pred, feature_k])
-        logits_pred = logits_pred.view(B1 * self.pred_steps, num_epoch * B1)
+        # logits_pred = torch.einsum('ijk,mnk->ijnm', [pred, feature_k])
+        # logits_pred = logits_pred.view(B1 * self.pred_steps, num_epoch * B1)
+        #
+        # logits_mem = torch.einsum('mnk,ki->mni', [pred, self.queue_first.clone().detach()])
+        # logits_mem = logits_mem.view(B1 * self.pred_steps, self.K)
+        # logits = torch.cat([logits_pred, logits_mem], dim=-1)
 
-        logits_mem = torch.einsum('mnk,ki->mni', [pred, self.queue_first.clone().detach()])
-        logits_mem = logits_mem.view(B1 * self.pred_steps, self.K)
-        logits = torch.cat([logits_pred, logits_mem], dim=-1)
+        logits_pos = torch.einsum('ijk,ijk->ij', [pred, feature_k[:, -self.pred_steps:, :]])
+        logits_pos = logits_pos.view(B1 * self.pred_steps, 1)
+
+        logits_neg = torch.einsum('ijk,km->ijm', [pred, self.queue_first.clone().detach()])
+        logits_neg = logits_neg.view(B1 * self.pred_steps, self.K)
+
+        logits = torch.cat([logits_pos, logits_neg], dim=-1)
 
         logits /= self.temperature
 
@@ -168,24 +176,26 @@ class MC3(nn.Module):
             if self.queue_is_full:
                 print('[INFO] ===== Queue is full now =====')
 
-        if self.targets_pred is None:
-            targets_pred = torch.zeros(B1, num_epoch, self.pred_steps, B1)
-            for i in range(B1):
-                for j in range(self.pred_steps):
-                    targets_pred[i, num_epoch - self.pred_steps + j, j, i] = 1
-            targets_pred = targets_pred.view(B1 * num_epoch, self.pred_steps * B1)
-            targets_pred = targets_pred.t()
-            targets_pred = targets_pred.cuda(device=self.device)
-            self.targets_pred = targets_pred
+        # if self.targets_pred is None:
+        #     targets_pred = torch.zeros(B1, num_epoch, self.pred_steps, B1)
+        #     for i in range(B1):
+        #         for j in range(self.pred_steps):
+        #             targets_pred[i, num_epoch - self.pred_steps + j, j, i] = 1
+        #     targets_pred = targets_pred.view(B1 * num_epoch, self.pred_steps * B1)
+        #     targets_pred = targets_pred.t()
+        #     targets_pred = targets_pred.cuda(device=self.device)
+        #     self.targets_pred = targets_pred
+        #
+        # targets_mem = torch.zeros(B1, self.pred_steps, self.K)
+        # targets_mem = targets_mem.cuda(self.device)
 
-        targets_mem = torch.zeros(B1, self.pred_steps, self.K)
-        targets_mem = targets_mem.cuda(self.device)
+        targets_mem = idx.unsqueeze(-1)[:, -self.pred_steps:] == self.queue_idx.unsqueeze(0)
 
         if self.queue_is_full:
             mem_sim = torch.einsum('ijk,km->ijm', [feature_kf[:, -self.pred_steps:, :],
                                                    self.queue_second.clone().detach()])  # (B, num_epoch, K)
-            mem_sim[idx.unsqueeze(-1)[:, -self.pred_steps:] == self.queue_idx.unsqueeze(
-                0)] = -np.inf  # (B, num_epoch), (K), exclude self
+            mem_sim[targets_mem] = -np.inf  # (B, num_epoch), (K), exclude self
+            targets_mem = targets_mem.float()
             _, topk_idx = torch.topk(mem_sim, k=self.num_prop, dim=-1)
             targets_mem.scatter_(-1, topk_idx, 1)
 
@@ -200,6 +210,7 @@ class MC3(nn.Module):
             neighbor_mat.scatter_(-1, topk_idx, 1)
             neighbor_mat_second = torch.zeros(self.K, self.K).cuda(self.device)
             neighbor_mat_second.scatter_(-1, topk_idx_second, 1)
+            del topk_idx, topk_idx_second
             queue_tmp_mat = torch.eye(self.K).cuda(self.device)  # for matrix power
             queue_idx = torch.zeros(self.K, self.K).cuda(self.device)
             for i in range(1, self.prop_iter):
@@ -213,7 +224,7 @@ class MC3(nn.Module):
             targets_mem.matmul(queue_idx)
 
         targets_mem = targets_mem.view(self.pred_steps * B1, self.K)
-        targets = torch.cat([self.targets_pred, targets_mem], dim=-1)
+        targets = torch.cat([torch.ones(targets_mem.shape[0], 1).long().cuda(self.device), targets_mem], dim=-1)
 
         self._dequeue_and_enqueue(feature_k.view(B1 * num_epoch, self.feature_dim),
                                   feature_kf.view(B1 * num_epoch, self.feature_dim),

@@ -67,3 +67,16 @@ class MultiNCELoss(nn.Module):
             return loss.mean()
         else:
             raise ValueError
+
+
+class SoftLogitLoss(nn.Module):
+    def __init__(self):
+        super(SoftLogitLoss, self).__init__()
+
+    def forward(self, output: torch.Tensor, target: torch.Tensor):
+        # print(output.shape, target.shape)
+        if len(target.shape) == 1:
+            target = target.view(-1, 1)
+        loss = torch.log(1 + torch.exp(-target * output)).mean()
+
+        return loss

@@ -123,7 +123,7 @@ def parse_args(verbose=True):
     return args_parsed
 
 
-def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args):
+def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, it, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
@@ -172,10 +172,12 @@ def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args):
                 #     # in this stage, self-similarity is already very high,
                 #     # randomly mask out the self-similarity for optimization efficiency,
                 #     targets_clone = targets.clone()
-                #     targets_sum = targets.sum(1)
+                #     targets_sum = targets.sum(-1)
                 #     targets_clone[targets_sum != 1, 0] = 0  # mask out self-similarity
                 #     loss = criterion(logits, targets_clone)
                 # else:
+                #     loss = criterion(logits, targets)
+
                 loss = criterion(logits, targets)
 
                 optimizer.zero_grad()
@@ -186,9 +188,11 @@ def pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args):
 
                 progress_bar.set_postfix(
                     {'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+        if args.wandb:
+            wandb.log({f'pretrain_loss_it{it}': np.mean(loss), f'pretrain_acc_it{it}': np.mean(accuracies)})
 
 
-def finetune(classifier, dataset, device, args):
+def finetune(classifier, dataset, device, it, args):
     params = []
     if args.finetune_mode == 'freeze':
         print('[INFO] Finetune classifier only for the last layer...')
@@ -245,6 +249,12 @@ def finetune(classifier, dataset, device, args):
                 accuracies.append(logits_accuracy(out, y[:, -args.pred_steps - 1], topk=(1,))[0])
 
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+        if args.wandb:
+            if it is None:
+                wandb.log(
+                    {'finetune_acc_it': np.mean(accuracies), 'finetune_loss': np.mean(losses)})
+            else:
+                wandb.log({f'finetune_acc_it{it}': np.mean(accuracies), f'finetune_loss_it{it}': np.mean(losses)})
 
 
 def evaluate(classifier, dataset, device, args):
@@ -267,6 +277,61 @@ def evaluate(classifier, dataset, device, args):
     targets = np.concatenate(targets, axis=0)
 
     return scores, targets
+
+
+def test(state_dict, dataset, test_patients, reverse, device, it, args):
+    # Finetuning
+    if args.finetune_mode == 'freeze':
+        use_dropout = False
+        use_l2_norm = True
+        use_final_bn = True
+    else:
+        use_dropout = True
+        use_l2_norm = False
+        use_final_bn = False
+
+    if not reverse:
+        classifier = DPCMemClassifier(network=args.network, input_channels=args.channels_v1, hidden_channels=16,
+                                      feature_dim=args.feature_dim, pred_steps=args.pred_steps,
+                                      num_class=5,
+                                      use_dropout=use_dropout,
+                                      use_l2_norm=use_l2_norm,
+                                      use_batch_norm=use_final_bn, device=device)
+    else:
+        classifier = DPCMemClassifier(network=args.second_network, input_channels=args.channels_v2, hidden_channels=16,
+                                      feature_dim=args.feature_dim, pred_steps=args.pred_steps,
+                                      num_class=5,
+                                      use_dropout=use_dropout,
+                                      use_l2_norm=use_l2_norm,
+                                      use_batch_norm=use_final_bn, device=device)
+    classifier.cuda(device)
+    classifier.load_state_dict(state_dict, strict=False)
+
+    finetune(classifier, dataset, device, it, args)
+
+    if args.network == 'r1d':
+        if reverse:
+            transform = TF.Compose(
+                [TF.Resize((64, 64)), TF.ToTensor()]
+            )
+            test_dataset = SleepDatasetImg(args.data_path_v2, args.data_name, args.num_epoch, transform=transform,
+                                           patients=test_patients)
+        else:
+            test_dataset = SleepDataset(args.data_path_v1, args.data_name, args.num_epoch, test_patients,
+                                        preprocessing=args.preprocessing)
+    else:
+        if reverse:
+            test_dataset = SleepDataset(args.data_path_v2, args.data_name, args.num_epoch, test_patients,
+                                        preprocessing=args.preprocessing)
+        else:
+            transform = TF.Compose(
+                [TF.Resize((64, 64)), TF.ToTensor()]
+            )
+            test_dataset = SleepDatasetImg(args.data_path_v1, args.data_name, args.num_epoch, transform=transform,
+                                           patients=test_patients)
+    scores, targets = evaluate(classifier, test_dataset, device, args)
+    performance = get_performance(scores, targets)
+    print(performance)
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
@@ -349,12 +414,13 @@ def main_worker(run_id, device, train_patients, test_patients, args):
             if 'queue' not in k:
                 new_dict[k] = v
         new_state_dict_v1 = new_dict
-        new_dict = {}
-        for k, v in new_state_dict_v1.items():
-            if 'encoder_q.' in k:
-                k = k.replace('encoder_q.', 'encoder_k.')
-                new_dict[k] = v
-        new_state_dict_v1 = new_dict
+        # TODO
+        # new_dict = {}
+        # for k, v in new_state_dict_v1.items():
+        #     if 'encoder_q.' in k:
+        #         k = k.replace('encoder_q.', 'encoder_k.')
+        #         new_dict[k] = v
+        # new_state_dict_v1 = new_dict
 
         state_dict = {**new_state_dict_v1, **new_state_dict_v2}
         try:
@@ -364,9 +430,9 @@ def main_worker(run_id, device, train_patients, test_patients, args):
             exit(-1)
 
         if reverse:
-            pretrain(model, train_dataset_v2, train_dataset_v1, device, run_id, args)
+            pretrain(model, train_dataset_v2, train_dataset_v1, device, run_id, it, args)
         else:
-            pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, args)
+            pretrain(model, train_dataset_v1, train_dataset_v2, device, run_id, it, args)
 
         # Update the state dict
         state_dict_v1 = model.state_dict()
@@ -379,6 +445,9 @@ def main_worker(run_id, device, train_patients, test_patients, args):
         else:
             torch.save(model.state_dict(),
                        os.path.join(args.save_path, f'mc3_first_run_{run_id}_iter_{it}.pth.tar'))
+
+        test(model.state_dict(), train_dataset_v2 if reverse else train_dataset_v1, test_patients,
+             reverse, device, it, args)
 
     # network, input_channels, hidden_channels, feature_dim, pred_steps, num_class,
     # use_l2_norm, use_dropout, use_batch_norm, device
@@ -403,7 +472,7 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     state_dict = model.state_dict()
     classifier.load_state_dict(state_dict, strict=False)
 
-    finetune(classifier, train_dataset_v1, device, args)
+    finetune(classifier, train_dataset_v1, device, None, args)
     torch.save(classifier.state_dict(), os.path.join(args.save_path, f'mc3_run_{run_id}_finetuned.pth.tar'))
 
     if args.network == 'r1d':

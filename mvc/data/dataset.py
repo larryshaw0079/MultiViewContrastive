@@ -16,6 +16,7 @@ import torch
 from PIL import Image
 from sklearn.preprocessing import QuantileTransformer
 from torch.utils.data import Dataset, Sampler
+from tqdm.std import tqdm
 
 from .transformation import Transformation
 
@@ -364,6 +365,122 @@ Shape of an Instance: {}
 Selected patients: {}
 **********************************************************************
         """.format(self.len, self.full_shape, self.patients)
+
+
+class SleepDatasetSampling(Dataset):
+    def __init__(self, data_path, data_name, num_sampling, mode, dis, patients: List = None,
+                 preprocessing: str = 'none', verbose=True):
+        assert isinstance(patients, list)
+        assert mode in ['pair', 'triplet']
+
+        self.data_path = data_path
+        self.data_name = data_name
+        self.patients = patients
+        self.num_sampling = num_sampling
+        self.mode = mode
+        self.dis = dis
+        self.preprocessing = preprocessing
+
+        assert preprocessing in ['none', 'quantile', 'standard']
+
+        self.data = []
+        self.labels = []
+        self.annotations = []
+
+        for i, patient in enumerate(patients):
+            if verbose:
+                print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
+            data = np.load(os.path.join(data_path, patient))
+            if data_name == 'sleepedf':
+                recordings = np.stack([data['eeg_fpz_cz'], data['eeg_pz_oz']], axis=1)
+                annotations = data['annotation']
+            elif data_name == 'isruc':
+                recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
+                                       data['O1_A2'], data['O2_A1']], axis=1)
+                annotations = data['label'].flatten()
+            else:
+                raise ValueError
+
+            if preprocessing == 'standard':
+                print(f'[INFO] Applying standard scaler...')
+
+                recordings = tensor_standardize(recordings, dim=-1)
+            elif preprocessing == 'quantile':
+                print(f'[INFO] Applying quantile scaler...')
+                scaler = QuantileTransformer(output_distribution='normal')
+                recordings_old = recordings
+                recordings = []
+                for j in range(recordings_old.shape[0]):
+                    recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
+                recordings = np.stack(recordings, axis=0)
+            else:
+                print(f'[INFO] Convert the unit from V to uV...')
+                recordings *= 1e6
+
+            if verbose:
+                print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
+
+            num_to_sample = num_sampling // len(patients)
+            if mode == 'pair':
+                anchor_indices = np.random.choice(np.arange(recordings.shape[0]), size=num_to_sample // 2,
+                                                  replace=False)
+                labels = []
+                for k in tqdm(anchor_indices):
+                    pos_idx = np.random.randint(np.clip(k - dis, 0, recordings.shape[0]),
+                                                np.clip(k + dis, 0, recordings.shape[0]))
+                    neg_idx = np.ones(recordings.shape[0], dtype=np.bool)
+                    neg_idx[np.arange(np.clip(k - dis, 0, recordings.shape[0]),
+                                      np.clip(k + dis, 0, recordings.shape[0]))] = False
+                    neg_idx = np.arange(recordings.shape[0])[neg_idx]
+                    neg_idx = np.random.choice(neg_idx, size=1)[0]
+                    self.data.append(np.stack([recordings[k], recordings[pos_idx]], axis=0))
+                    labels.append(1)
+                    self.data.append(np.stack([recordings[k], recordings[neg_idx]], axis=0))
+                    labels.append(-1)
+                labels = np.array(labels)
+            else:
+                anchor_indices = np.random.choice(np.arange(0, recordings.shape[0] - dis), size=num_to_sample // 2,
+                                                  replace=False)
+                labels = []
+                for k in tqdm(anchor_indices):
+                    pos_idx = np.random.randint(k + 1, k + dis)
+                    neg_idx = np.ones(recordings.shape[0], dtype=np.bool)
+                    neg_idx[np.arange(k, k + dis + 1)] = False
+                    neg_idx = np.arange(recordings.shape[0])[neg_idx]
+                    neg_idx = np.random.choice(neg_idx, size=1)[0]
+                    self.data.append(np.stack([recordings[k], recordings[pos_idx], recordings[k + dis]], axis=0))
+                    labels.append(1)
+                    self.data.append(np.stack([recordings[k], recordings[neg_idx], recordings[k + dis]], axis=0))
+                    labels.append(-1)
+            self.labels.append(labels)
+            self.annotations.append(annotations)
+
+        self.data = np.stack(self.data, axis=0)
+        self.labels = torch.from_numpy(np.concatenate(self.labels).astype(np.long))
+        self.annotations = np.concatenate(self.annotations)
+        self.full_shape = self.data[0].shape
+
+    def __getitem__(self, item):
+        x = self.data[item]
+        y = self.labels[item]
+
+        x = torch.from_numpy(x.astype(np.float32))
+
+        return x, y
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        return """
+**********************************************************************
+Dataset Summary:
+Preprocessing: {}
+# Instance: {}
+Shape of an Instance: {}
+Selected patients: {}
+**********************************************************************
+            """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
 
 
 class TwoDataset(Dataset):
