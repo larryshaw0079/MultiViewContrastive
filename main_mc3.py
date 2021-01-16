@@ -453,6 +453,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     # use_l2_norm, use_dropout, use_batch_norm, device
 
     # Finetuning
+    del train_dataset_v2
+
     if args.finetune_mode == 'freeze':
         use_dropout = False
         use_l2_norm = True
@@ -475,6 +477,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     finetune(classifier, train_dataset_v1, device, None, args)
     torch.save(classifier.state_dict(), os.path.join(args.save_path, f'mc3_run_{run_id}_finetuned.pth.tar'))
 
+    # Evaluation
+    del train_dataset_v1
     if args.network == 'r1d':
         test_dataset = SleepDataset(args.data_path_v1, args.data_name, args.num_epoch, test_patients,
                                     preprocessing=args.preprocessing)
