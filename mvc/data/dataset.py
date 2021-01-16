@@ -269,9 +269,16 @@ class SleepDatasetImg(Dataset):
 
         # x = torch.stack([self.transform(x[0]), self.transform(x[1])], dim=0)
         # print(x.shape, x[:, 0].shape, '-------------')
-        x1 = torch.stack([self.transform(Image.fromarray(x[i][0])) for i in range(x.shape[0])], dim=0)  # TODO for temp
-        x2 = torch.stack([self.transform(Image.fromarray(x[i][1])) for i in range(x.shape[0])], dim=0)
-        x = torch.cat([x1, x2], dim=1)
+        if self.data_name == 'isruc':
+            x_all = []
+            for k in range(x.shape[1]):
+                x_all.append(torch.stack([self.transform(Image.fromarray(x[i][k])) for i in range(x.shape[0])], dim=0))
+            x = torch.cat(x_all, dim=1)
+        else:
+            x1 = torch.stack([self.transform(Image.fromarray(x[i][0])) for i in range(x.shape[0])],
+                             dim=0)  # TODO for temp
+            x2 = torch.stack([self.transform(Image.fromarray(x[i][1])) for i in range(x.shape[0])], dim=0)
+            x = torch.cat([x1, x2], dim=1)
         y = torch.from_numpy(y.astype(np.long))
 
         if self.return_idx:
@@ -386,6 +393,7 @@ class SleepDatasetSampling(Dataset):
         self.data = []
         self.labels = []
         self.annotations = []
+        self.indices = []
 
         for i, patient in enumerate(patients):
             if verbose:
@@ -433,9 +441,11 @@ class SleepDatasetSampling(Dataset):
                                       np.clip(k + dis, 0, recordings.shape[0]))] = False
                     neg_idx = np.arange(recordings.shape[0])[neg_idx]
                     neg_idx = np.random.choice(neg_idx, size=1)[0]
-                    self.data.append(np.stack([recordings[k], recordings[pos_idx]], axis=0))
+                    # self.data.append(np.stack([recordings[k], recordings[pos_idx]], axis=0))
+                    self.indices.append(np.array([k, pos_idx]))
                     labels.append(1)
-                    self.data.append(np.stack([recordings[k], recordings[neg_idx]], axis=0))
+                    # self.data.append(np.stack([recordings[k], recordings[neg_idx]], axis=0))
+                    self.indices.append(np.array([k, neg_idx]))
                     labels.append(-1)
                 labels = np.array(labels)
             else:
@@ -448,28 +458,33 @@ class SleepDatasetSampling(Dataset):
                     neg_idx[np.arange(k, k + dis + 1)] = False
                     neg_idx = np.arange(recordings.shape[0])[neg_idx]
                     neg_idx = np.random.choice(neg_idx, size=1)[0]
-                    self.data.append(np.stack([recordings[k], recordings[pos_idx], recordings[k + dis]], axis=0))
+                    # self.data.append(np.stack([recordings[k], recordings[pos_idx], recordings[k + dis]], axis=0))
+                    self.indices.append(np.array([k, pos_idx, k + dis]))
                     labels.append(1)
-                    self.data.append(np.stack([recordings[k], recordings[neg_idx], recordings[k + dis]], axis=0))
+                    # self.data.append(np.stack([recordings[k], recordings[neg_idx], recordings[k + dis]], axis=0))
+                    self.indices.append(np.array([k, neg_idx, k + dis]))
                     labels.append(-1)
             self.labels.append(labels)
+            self.data.append(recordings)
             self.annotations.append(annotations)
 
-        self.data = np.stack(self.data, axis=0)
+        self.data = np.concatenate(self.data)
+        self.indices = np.stack(self.indices, axis=0)
         self.labels = torch.from_numpy(np.concatenate(self.labels).astype(np.long))
         self.annotations = np.concatenate(self.annotations)
         self.full_shape = self.data[0].shape
 
     def __getitem__(self, item):
-        x = self.data[item]
+        # x = self.data[item]
+        idx = self.indices[item]
         y = self.labels[item]
 
-        x = torch.from_numpy(x.astype(np.float32))
+        x = torch.from_numpy(self.data[idx].astype(np.float32))
 
         return x, y
 
     def __len__(self):
-        return len(self.data)
+        return len(self.indices)
 
     def __repr__(self):
         return """
@@ -477,10 +492,11 @@ class SleepDatasetSampling(Dataset):
 Dataset Summary:
 Preprocessing: {}
 # Instance: {}
-Shape of an Instance: {}
+Shape of indices: {}
+Shape of an instance: {}
 Selected patients: {}
 **********************************************************************
-            """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
+            """.format(self.preprocessing, len(self.indices), self.indices.shape, self.full_shape, self.patients)
 
 
 class TwoDataset(Dataset):

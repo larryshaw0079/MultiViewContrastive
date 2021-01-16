@@ -265,6 +265,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     torch.save(model.state_dict(), os.path.join(args.save_path, f'{args.model}_run_{run_id}_pretrained.pth.tar'))
 
     # Finetuning
+    del train_dataset  # Clear
+
     if args.finetune_mode == 'freeze':
         use_dropout = False
         use_l2_norm = False
@@ -289,6 +291,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     finetune(classifier, train_dataset, device, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'{args.model}_run_{run_id}_finetuned.pth.tar'))
 
+    # Evaluation
+    del train_dataset
     test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
                                 preprocessing=args.preprocessing)
     print(test_dataset)

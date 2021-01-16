@@ -311,6 +311,8 @@ def main_worker(run_id, device, train_patients, test_patients, args):
     finetune(classifier, train_dataset, device, args)
     torch.save(model.state_dict(), os.path.join(args.save_path, f'dpc_run_{run_id}_finetuned.pth.tar'))
 
+    # Evaluation
+    del train_dataset  # clear
     if args.network == 'r1d':
         test_dataset = SleepDataset(args.data_path, args.data_name, args.num_epoch, test_patients,
                                     preprocessing=args.preprocessing)
