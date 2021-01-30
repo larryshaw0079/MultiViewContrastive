@@ -16,7 +16,7 @@ from ..backbone import R1DNet, ResNet, GRU
 
 class MC3(nn.Module):
     def __init__(self, network, input_channels_v1, input_channels_v2, hidden_channels, feature_dim, pred_steps, reverse,
-                 temperature, m, K, prop_iter, num_prop, device):
+                 temperature, m, K, prop_iter, num_prop, single_view, device):
         super(MC3, self).__init__()
 
         self.feature_dim = feature_dim
@@ -27,6 +27,7 @@ class MC3(nn.Module):
         self.K = K
         self.prop_iter = prop_iter
         self.num_prop = num_prop
+        self.single_view = single_view
         self.device = device
 
         if network == 'r1d':
@@ -192,8 +193,12 @@ class MC3(nn.Module):
         targets_mem = idx.unsqueeze(-1)[:, -self.pred_steps:] == self.queue_idx.unsqueeze(0)
 
         if self.queue_is_full:
-            mem_sim = torch.einsum('ijk,km->ijm', [feature_kf[:, -self.pred_steps:, :],
-                                                   self.queue_second.clone().detach()])  # (B, num_epoch, K)
+            if self.single_view:
+                mem_sim = torch.einsum('ijk,km->ijm', [feature_k[:, -self.pred_steps:, :],
+                                                       self.queue_first.clone().detach()])
+            else:
+                mem_sim = torch.einsum('ijk,km->ijm', [feature_kf[:, -self.pred_steps:, :],
+                                                       self.queue_second.clone().detach()])  # (B, num_epoch, K)
             mem_sim[targets_mem] = -np.inf  # (B, num_epoch), (K), exclude self
             targets_mem = targets_mem.float()
             _, topk_idx = torch.topk(mem_sim, k=self.num_prop, dim=-1)
@@ -214,10 +219,13 @@ class MC3(nn.Module):
             queue_tmp_mat = torch.eye(self.K).cuda(self.device)  # for matrix power
             queue_idx = torch.zeros(self.K, self.K).cuda(self.device)
             for i in range(1, self.prop_iter):
-                if i % 2 == 1:
+                if self.single_view:
                     queue_tmp_mat = torch.mm(queue_tmp_mat, neighbor_mat)
                 else:
-                    queue_tmp_mat = torch.mm(queue_tmp_mat, neighbor_mat_second)
+                    if i % 2 == 1:
+                        queue_tmp_mat = torch.mm(queue_tmp_mat, neighbor_mat)
+                    else:
+                        queue_tmp_mat = torch.mm(queue_tmp_mat, neighbor_mat_second)
 
                 queue_idx += queue_tmp_mat
 

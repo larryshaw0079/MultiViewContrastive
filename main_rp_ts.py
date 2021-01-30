@@ -70,7 +70,6 @@ def parse_args(verbose=True):
     parser.add_argument('--pred-steps', type=int, default=5)
 
     # Training
-    parser.add_argument('--only-pretrain', action='store_true')
     parser.add_argument('--devices', type=int, nargs='+', default=None)
     parser.add_argument('--fold', type=int, required=True)
     parser.add_argument('--kfold', type=int, default=10)
@@ -261,8 +260,13 @@ def main_worker(run_id, device, train_patients, test_patients, args):
                                          train_patients, preprocessing=args.preprocessing)
     print(train_dataset)
 
-    pretrain(model, train_dataset, device, run_id, args)
-    torch.save(model.state_dict(), os.path.join(args.save_path, f'{args.model}_run_{run_id}_pretrained.pth.tar'))
+    if args.resume:
+        print(f'[INFO] loading weights from {args.load_path}...')
+        assert args.load_path is not None
+        model.load_state_dict(torch.load(args.load_path))
+    else:
+        pretrain(model, train_dataset, device, run_id, args)
+        torch.save(model.state_dict(), os.path.join(args.save_path, f'{args.model}_run_{run_id}_pretrained.pth.tar'))
 
     # Finetuning
     del train_dataset  # Clear

@@ -98,6 +98,7 @@ def parse_args(verbose=True):
     parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--iteration', type=int, default=5)
     parser.add_argument('--prop-iter', type=int, default=3)
+    parser.add_argument('--single-view', action='store_true')
     parser.add_argument('--num-prop', type=int, default=3)
 
     # Misc
@@ -332,6 +333,7 @@ def test(state_dict, dataset, test_patients, reverse, device, it, args):
     scores, targets = evaluate(classifier, test_dataset, device, args)
     performance = get_performance(scores, targets)
     print(performance)
+    return performance
 
 
 def main_worker(run_id, device, train_patients, test_patients, args):
@@ -381,14 +383,14 @@ def main_worker(run_id, device, train_patients, test_patients, args):
             model = MC3(network=args.network, input_channels_v1=args.channels_v1, input_channels_v2=args.channels_v2,
                         hidden_channels=16, feature_dim=args.feature_dim, pred_steps=args.pred_steps,
                         reverse=True, temperature=args.temperature, m=args.mem_m, K=args.mem_k,
-                        prop_iter=args.prop_iter,
-                        num_prop=args.num_prop, device=device)
+                        prop_iter=args.prop_iter, num_prop=args.num_prop, single_view=args.single_view,
+                        device=device)
         else:
             model = MC3(network=args.network, input_channels_v1=args.channels_v1, input_channels_v2=args.channels_v2,
                         hidden_channels=16, feature_dim=args.feature_dim, pred_steps=args.pred_steps,
                         reverse=False, temperature=args.temperature, m=args.mem_m, K=args.mem_k,
-                        prop_iter=args.prop_iter,
-                        num_prop=args.num_prop, device=device)
+                        prop_iter=args.prop_iter, num_prop=args.num_prop, single_view=args.single_view,
+                        device=device)
 
         model.cuda(device)
 
